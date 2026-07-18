@@ -1,0 +1,165 @@
+{
+  "$id": "proposal",
+  "version": "1.0.0",
+  "title": "Client Proposal extraction schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["document", "meta"],
+  "properties": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "proposal_number",
+        "date",
+        "client_name",
+        "client_contact",
+        "prepared_by",
+        "validity",
+        "executive_summary",
+        "background",
+        "objectives",
+        "scope_of_work",
+        "deliverables",
+        "approach",
+        "timeline",
+        "team",
+        "pricing",
+        "assumptions",
+        "exclusions",
+        "terms"
+      ],
+      "properties": {
+        "title": { "type": "string", "description": "Proposal title (e.g. 'Proposal for SHMS Document Review'). May be drafted from the source engagement description. NOT_FOUND only if the source gives no basis." },
+        "proposal_number": { "type": "string", "description": "Proposal/quote reference number, verbatim. NOT_FOUND if absent." },
+        "date": { "type": "string", "description": "Proposal date, verbatim. NOT_FOUND if absent." },
+        "client_name": { "type": "string", "description": "Prospective client/company name. NOT_FOUND if absent." },
+        "client_contact": { "type": "string", "description": "Recipient name and role if given. NOT_FOUND if absent." },
+        "prepared_by": { "type": "string", "description": "Person/entity preparing the proposal. NOT_FOUND if absent." },
+        "validity": { "type": "string", "description": "How long the proposal/pricing remains valid. COMMERCIALLY-CRITICAL: verbatim only. NOT_FOUND if not stated." },
+        "executive_summary": { "type": "string", "description": "Brief summary of the engagement and its value. May be drafted from source material; must not introduce services, outcomes, or figures not in the source. NOT_FOUND if no basis." },
+        "background": { "type": "string", "description": "Client situation and why this work is needed. May be drafted from source material only. NOT_FOUND if no basis." },
+        "objectives": {
+          "type": "array",
+          "description": "Engagement objectives from the source. Empty array if none.",
+          "items": { "type": "string" }
+        },
+        "scope_of_work": {
+          "type": "array",
+          "description": "Work items in scope. COMMERCIALLY-CRITICAL: only work the source actually discusses — never pad the scope.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["item", "description"],
+            "properties": {
+              "item": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "deliverables": {
+          "type": "array",
+          "description": "Concrete deliverables. COMMERCIALLY-CRITICAL: never promise deliverables the source does not mention.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "description"],
+            "properties": {
+              "name": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "approach": {
+          "type": "array",
+          "description": "Phases/method of delivery. Descriptions may be lightly drafted from source material. Empty array if none.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["phase", "description", "duration"],
+            "properties": {
+              "phase": { "type": "string" },
+              "description": { "type": "string" },
+              "duration": { "type": "string", "description": "Duration/dates as stated. NOT_FOUND if not stated." }
+            }
+          }
+        },
+        "timeline": {
+          "type": "array",
+          "description": "Milestones and dates. COMMERCIALLY-CRITICAL: dates verbatim only, never invented. Empty array if none.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["milestone", "date"],
+            "properties": {
+              "milestone": { "type": "string" },
+              "date": { "type": "string", "description": "NOT_FOUND if not stated." }
+            }
+          }
+        },
+        "team": {
+          "type": "array",
+          "description": "People assigned to the engagement. Empty array if none named.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "role", "experience"],
+            "properties": {
+              "name": { "type": "string" },
+              "role": { "type": "string", "description": "NOT_FOUND if not stated." },
+              "experience": { "type": "string", "description": "Relevant experience/credentials as stated. NOT_FOUND if not stated." }
+            }
+          }
+        },
+        "pricing": {
+          "type": "array",
+          "description": "Fee items. COMMERCIALLY-CRITICAL: amounts verbatim only — an invented or misquoted price is the worst failure this doc type can produce. Empty array if the source states no pricing.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["item", "amount", "notes"],
+            "properties": {
+              "item": { "type": "string" },
+              "amount": { "type": "string", "description": "Amount and unit exactly as stated (e.g. '$180 per document', '$12,500 fixed'). NOT_FOUND if not stated for this item." },
+              "notes": { "type": "string", "description": "Qualifiers (ex GST, estimates, volume tiers) verbatim. Empty string if none." }
+            }
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "description": "Assumptions the pricing/scope depends on, from the source. Empty array if none.",
+          "items": { "type": "string" }
+        },
+        "exclusions": {
+          "type": "array",
+          "description": "Explicitly out-of-scope items, from the source. Empty array if none.",
+          "items": { "type": "string" }
+        },
+        "terms": { "type": "string", "description": "Payment/engagement terms as stated. NOT_FOUND if absent." }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_confidence", "not_found", "warnings"],
+      "properties": {
+        "field_confidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "level", "note"],
+            "properties": {
+              "field": { "type": "string" },
+              "level": { "type": "string", "enum": ["high", "medium", "low"] },
+              "note": { "type": "string" }
+            }
+          }
+        },
+        "not_found": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

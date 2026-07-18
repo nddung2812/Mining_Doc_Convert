@@ -62,10 +62,31 @@ const dataByType = {
     responsibilities: [{ role: "Mining Manager", duties: "Maintain ground control management system." }],
     trigger_action_responses: [{ trigger: "Convergence > 5mm/week", level: "Amber", response: "Restrict access; notify Geotech." }],
   },
+  proposal: {
+    ...common,
+    title: "Proposal for SHMS Document Review",
+    proposal_number: "P-2026-014",
+    date: "18 July 2026",
+    client_contact: "A. Manager — Site Senior Executive",
+    prepared_by: "Hubline Consulting",
+    validity: "30 days from date of issue",
+    executive_summary: "A structured review and rewrite of 40 safety management system documents.",
+    background: "The client's SHMS documentation has drifted from site practice.",
+    objectives: ["Bring all SOPs to current site practice", "Achieve consistent formatting"],
+    scope_of_work: [{ item: "SOP review", description: "Review and rewrite up to 40 SOPs." }],
+    deliverables: [{ name: "Revised SOP set", description: "Client-branded, review-ready documents." }],
+    approach: [{ phase: "Phase 1 — Discovery", description: "Collect and triage current documents.", duration: "2 weeks" }],
+    timeline: [{ milestone: "Draft set delivered", date: "«NOT FOUND — REVIEW REQUIRED»" }],
+    team: [{ name: "J. Nguyen", role: "Lead consultant", experience: "10 years mining safety systems." }],
+    pricing: [{ item: "Per-document review", amount: "$180 per document", notes: "ex GST" }],
+    assumptions: ["Client supplies source documents in editable format"],
+    exclusions: ["Site verification walk-downs"],
+    terms: "14-day payment terms from invoice.",
+  },
 };
 
 let failed = false;
-for (const type of ["sop", "ra", "hmp"]) {
+for (const type of ["sop", "ra", "hmp", "proposal"]) {
   try {
     const zip = new PizZip(fs.readFileSync(path.join(process.cwd(), "templates", `${type}.docx`)));
     const doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true });

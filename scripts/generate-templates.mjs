@@ -97,26 +97,25 @@ const warningsBlock = [
   loopTag("{/has_review_warnings}"),
 ];
 
-const draftFooter = new Footer({
-  children: [
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [
-        new TextRun({
-          text: "DRAFT generated {generated_at} — {doc_number} Rev {revision} — not valid until reviewed and approved by a qualified person",
-          font: FONT,
-          size: 16,
-          color: "888888",
-        }),
-      ],
-    }),
-  ],
-});
+const COMPLIANCE_FOOTER =
+  "DRAFT generated {generated_at} — {doc_number} Rev {revision} — not valid until reviewed and approved by a qualified person";
+const PROPOSAL_FOOTER =
+  "DRAFT generated {generated_at} — {proposal_number} — pending internal review, not an offer until issued";
 
-function buildDoc(children) {
+const draftFooter = (footerText) =>
+  new Footer({
+    children: [
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({ text: footerText, font: FONT, size: 16, color: "888888" })],
+      }),
+    ],
+  });
+
+function buildDoc(children, footerText = COMPLIANCE_FOOTER) {
   return new Document({
     styles: { default: { document: { run: { font: FONT, size: 22 } } } },
-    sections: [{ footers: { default: draftFooter }, children }],
+    sections: [{ footers: { default: draftFooter(footerText) }, children }],
   });
 }
 
@@ -213,12 +212,58 @@ const hmpChildren = [
   ...warningsBlock,
 ];
 
-for (const [name, children] of [
+const proposalChildren = [
+  ...titleBlock("Proposal"),
+  metaTable([
+    ["Reference", "{proposal_number}"],
+    ["Date", "{date}"],
+    ["Prepared for", "{client_contact}"],
+    ["Prepared by", "{prepared_by}"],
+    ["Valid until", "{validity}"],
+  ]),
+  heading("1. Executive Summary"),
+  para("{executive_summary}"),
+  heading("2. Background"),
+  para("{background}"),
+  heading("3. Objectives"),
+  loopTag("{#objectives}"),
+  para("• {.}"),
+  loopTag("{/objectives}"),
+  heading("4. Scope of Work"),
+  loopTable(["Item", "Description"], ["{#scope_of_work}{item}", "{description}{/scope_of_work}"]),
+  heading("5. Deliverables"),
+  loopTable(["Deliverable", "Description"], ["{#deliverables}{name}", "{description}{/deliverables}"]),
+  heading("6. Approach"),
+  loopTag("{#approach}"),
+  para("{phase} ({duration})", { run: { bold: true } }),
+  para("{description}"),
+  loopTag("{/approach}"),
+  heading("7. Timeline"),
+  loopTable(["Milestone", "Date"], ["{#timeline}{milestone}", "{date}{/timeline}"]),
+  heading("8. Team"),
+  loopTable(["Name", "Role", "Relevant experience"], ["{#team}{name}", "{role}", "{experience}{/team}"]),
+  heading("9. Investment"),
+  loopTable(["Item", "Amount", "Notes"], ["{#pricing}{item}", "{amount}", "{notes}{/pricing}"]),
+  heading("10. Assumptions"),
+  loopTag("{#assumptions}"),
+  para("• {.}"),
+  loopTag("{/assumptions}"),
+  heading("11. Exclusions"),
+  loopTag("{#exclusions}"),
+  para("• {.}"),
+  loopTag("{/exclusions}"),
+  heading("12. Terms"),
+  para("{terms}"),
+  ...warningsBlock,
+];
+
+for (const [name, children, footerText] of [
   ["sop", sopChildren],
   ["ra", raChildren],
   ["hmp", hmpChildren],
+  ["proposal", proposalChildren, PROPOSAL_FOOTER],
 ]) {
-  const buffer = await Packer.toBuffer(buildDoc(children));
+  const buffer = await Packer.toBuffer(buildDoc(children, footerText));
   fs.writeFileSync(path.join(OUT_DIR, `${name}.docx`), buffer);
   console.log(`templates/${name}.docx written (${buffer.length} bytes)`);
 }

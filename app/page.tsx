@@ -7,6 +7,7 @@ const DOC_TYPES = [
   { value: "sop", label: "Standard Operating Procedure (SOP)" },
   { value: "ra", label: "Risk Assessment (RA)" },
   { value: "hmp", label: "Hazard Management Plan (HMP)" },
+  { value: "proposal", label: "Client Proposal" },
 ];
 
 export default function NewRunPage() {

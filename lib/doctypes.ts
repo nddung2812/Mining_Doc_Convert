@@ -18,8 +18,11 @@ interface DocTypeAssets {
 
 const cache = new Map<DocType, DocTypeAssets>();
 
-function readPrompt(): { text: string; version: string } {
-  const raw = fs.readFileSync(path.join(ROOT, "prompts", "extract.md"), "utf8");
+function readPrompt(docType: DocType): { text: string; version: string } {
+  // Doc-type-specific prompt wins; the shared compliance prompt is the fallback.
+  const specific = path.join(ROOT, "prompts", `extract-${docType}.md`);
+  const file = fs.existsSync(specific) ? specific : path.join(ROOT, "prompts", "extract.md");
+  const raw = fs.readFileSync(file, "utf8");
   const match = raw.match(/prompt_version:\s*([\w.\-]+)/);
   return { text: raw, version: match ? match[1] : "unknown" };
 }
@@ -38,7 +41,7 @@ export function getDocTypeAssets(docType: DocType): DocTypeAssets {
   delete apiSchema.version;
   delete apiSchema.$id;
 
-  const prompt = readPrompt();
+  const prompt = readPrompt(docType);
   const promptText = prompt.text.replaceAll("{{DOC_TYPE_NAME}}", DOC_TYPE_NAMES[docType]);
 
   const ajv = new Ajv({ strict: false, allErrors: true });
