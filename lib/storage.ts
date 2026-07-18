@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import type { ClientRecord, RunRecord } from "./types";
+import type { ClientRecord, RunRecord, TemplateBuildRecord } from "./types";
 
 export interface Storage {
   saveRun(run: RunRecord): Promise<void>;
@@ -13,10 +13,16 @@ export interface Storage {
   listClients(): Promise<ClientRecord[]>;
   saveClientFile(clientId: string, name: string, data: Buffer): Promise<void>;
   getClientFile(clientId: string, name: string): Promise<Buffer | null>;
+  saveBuild(build: TemplateBuildRecord): Promise<void>;
+  getBuild(id: string): Promise<TemplateBuildRecord | null>;
+  listBuilds(): Promise<TemplateBuildRecord[]>;
+  saveBuildFile(buildId: string, name: string, data: Buffer): Promise<void>;
+  getBuildFile(buildId: string, name: string): Promise<Buffer | null>;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data", "runs");
 const CLIENTS_DIR = path.join(process.cwd(), "data", "clients");
+const BUILDS_DIR = path.join(process.cwd(), "data", "builds");
 
 class LocalStorage implements Storage {
   private dir(runId: string): string {
@@ -111,10 +117,58 @@ class LocalStorage implements Storage {
       return null;
     }
   }
+
+  private buildDir(buildId: string): string {
+    if (!/^[a-z0-9-]+$/.test(buildId)) throw new Error("Invalid build id");
+    return path.join(BUILDS_DIR, buildId);
+  }
+
+  async saveBuild(build: TemplateBuildRecord): Promise<void> {
+    const dir = this.buildDir(build.id);
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.writeFile(path.join(dir, "build.json"), JSON.stringify(build, null, 2));
+  }
+
+  async getBuild(id: string): Promise<TemplateBuildRecord | null> {
+    try {
+      const raw = await fs.promises.readFile(path.join(this.buildDir(id), "build.json"), "utf8");
+      return JSON.parse(raw) as TemplateBuildRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  async listBuilds(): Promise<TemplateBuildRecord[]> {
+    let ids: string[];
+    try {
+      ids = await fs.promises.readdir(BUILDS_DIR);
+    } catch {
+      return [];
+    }
+    const builds = await Promise.all(ids.map((id) => this.getBuild(id)));
+    return builds
+      .filter((b): b is TemplateBuildRecord => b !== null)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async saveBuildFile(buildId: string, name: string, data: Buffer): Promise<void> {
+    const dir = this.buildDir(buildId);
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.writeFile(path.join(dir, path.basename(name)), data);
+  }
+
+  async getBuildFile(buildId: string, name: string): Promise<Buffer | null> {
+    try {
+      return await fs.promises.readFile(path.join(this.buildDir(buildId), path.basename(name)));
+    } catch {
+      return null;
+    }
+  }
 }
 
 const BLOB_PREFIX = "mdocconvert/runs";
 const BLOB_CLIENT_PREFIX = "mdocconvert/clients";
+const BLOB_BUILD_PREFIX = "mdocconvert/builds";
 
 class BlobStorage implements Storage {
   private async blob() {
@@ -242,13 +296,79 @@ class BlobStorage implements Storage {
       return null;
     }
   }
+
+  async saveBuild(build: TemplateBuildRecord): Promise<void> {
+    const { put } = await this.blob();
+    await put(`${BLOB_BUILD_PREFIX}/${build.id}/build.json`, JSON.stringify(build), {
+      access: "public",
+      contentType: "application/json",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+    });
+  }
+
+  async getBuild(id: string): Promise<TemplateBuildRecord | null> {
+    const { head } = await this.blob();
+    try {
+      const meta = await head(`${BLOB_BUILD_PREFIX}/${id}/build.json`);
+      const res = await fetch(meta.url, { cache: "no-store" });
+      return res.ok ? ((await res.json()) as TemplateBuildRecord) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async listBuilds(): Promise<TemplateBuildRecord[]> {
+    const { list } = await this.blob();
+    const { blobs } = await list({ prefix: `${BLOB_BUILD_PREFIX}/` });
+    const builds = await Promise.all(
+      blobs
+        .filter((b) => b.pathname.endsWith("/build.json"))
+        .map(async (b) => {
+          try {
+            const res = await fetch(b.url, { cache: "no-store" });
+            return res.ok ? ((await res.json()) as TemplateBuildRecord) : null;
+          } catch {
+            return null;
+          }
+        }),
+    );
+    return builds
+      .filter((b): b is TemplateBuildRecord => b !== null)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async saveBuildFile(buildId: string, name: string, data: Buffer): Promise<void> {
+    const { put } = await this.blob();
+    await put(`${BLOB_BUILD_PREFIX}/${buildId}/${name}`, data, {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+    });
+  }
+
+  async getBuildFile(buildId: string, name: string): Promise<Buffer | null> {
+    const { head } = await this.blob();
+    try {
+      const meta = await head(`${BLOB_BUILD_PREFIX}/${buildId}/${name}`);
+      const res = await fetch(meta.url, { cache: "no-store" });
+      if (!res.ok) return null;
+      return Buffer.from(await res.arrayBuffer());
+    } catch {
+      return null;
+    }
+  }
 }
 
 let instance: Storage | null = null;
 
 export function getStorage(): Storage {
   if (!instance) {
-    instance = process.env.BLOB_READ_WRITE_TOKEN ? new BlobStorage() : new LocalStorage();
+    // BLOB_READ_WRITE_TOKEN is the legacy static credential; a store connected
+    // via the newer "Connect Project" flow instead sets BLOB_STORE_ID and the
+    // SDK resolves auth from the runtime-injected VERCEL_OIDC_TOKEN.
+    const blobConfigured = Boolean(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
+    instance = blobConfigured ? new BlobStorage() : new LocalStorage();
   }
   return instance;
 }
