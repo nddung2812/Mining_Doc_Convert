@@ -13,6 +13,11 @@
   "dependencies": {
     "@ai-sdk/gateway": "4.0.23",
     "@anthropic-ai/sdk": "^0.112.3",
+    "@editorjs/editorjs": "^2.31.6",
+    "@editorjs/header": "^2.8.9",
+    "@editorjs/list": "^2.0.9",
+    "@editorjs/quote": "^2.7.6",
+    "@editorjs/table": "^2.4.5",
     "@vercel/blob": "^2.6.1",
     "ai": "7.0.31",
     "ajv": "^8.20.0",
