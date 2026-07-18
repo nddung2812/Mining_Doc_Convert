@@ -58,7 +58,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
       </div>
 
       {run.status === "complete" && run.approval && (
-        <p className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-800">
+        <p className="rounded-md border-l-4 border-emerald-600 bg-white px-3 py-2 text-sm text-emerald-900 shadow-sm">
           Approved by <span className="font-semibold">{run.approval.approvedBy}</span> on{" "}
           {new Date(run.approval.at).toLocaleString()}.
         </p>

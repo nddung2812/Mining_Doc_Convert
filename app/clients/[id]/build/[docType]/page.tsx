@@ -3,10 +3,27 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  BadgeCheck,
+  CheckCircle2,
+  FileDown,
+  Layers,
+  Printer,
+  RefreshCw,
+  Send,
+  Wand2,
+} from "lucide-react";
 import type { ClientRecord, DocType, TemplateBuildRecord } from "@/lib/types";
 import { DOC_TYPE_NAMES, MAX_REVIEW_ROUNDS, isDocType } from "@/lib/types";
 
-type BuildWithRounds = TemplateBuildRecord & { roundsUsed: number; roundsLeft: number };
+type BuildWithRounds = TemplateBuildRecord & {
+  roundsUsed: number;
+  roundsLeft: number;
+  /** Median duration of past design rounds — powers the progress bar. */
+  expectedDurationMs?: number;
+};
 
 interface PreviewSection {
   id: string;
@@ -68,6 +85,7 @@ export default function BuildWizardPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Form state
+  const [templateName, setTemplateName] = useState("");
   const [logo, setLogo] = useState<File | null>(null);
   const [fonts, setFonts] = useState<File[]>([]);
   const [styleGuides, setStyleGuides] = useState<File[]>([]);
@@ -81,9 +99,18 @@ export default function BuildWizardPage() {
   const [openComment, setOpenComment] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
 
-  // Building animation
+  // Building animation + progress estimate (local fallback until the server
+  // record with generationStartedAt/expectedDurationMs is loaded).
   const [buildingMessage, setBuildingMessage] = useState(BUILDING_MESSAGES[0]);
   const messageTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [localProgress, setLocalProgress] = useState<{ start: number; expected: number } | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (stage !== "building") return;
+    const timer = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [stage]);
 
   const googleModel = useMemo(() => flagship(gatewayModels, "google", /pro/i), [gatewayModels]);
   const openaiModel = useMemo(() => flagship(gatewayModels, "openai", /gpt/i), [gatewayModels]);
@@ -179,6 +206,7 @@ export default function BuildWizardPage() {
     }
     const form = new FormData();
     form.set("docType", docType);
+    form.set("name", templateName);
     form.set("brief", brief);
     form.set("provider", provider);
     form.set("model", provider === "google" ? (googleModel?.id ?? "") : provider === "openai" ? (openaiModel?.id ?? "") : "");
@@ -188,19 +216,24 @@ export default function BuildWizardPage() {
     for (const f of references.slice(0, 3)) form.append("reference", f);
 
     startBuildingAnimation();
+    setLocalProgress({ start: Date.now(), expected: 180_000 });
     try {
       const res = await fetch(`/api/clients/${clientId}/builds`, { method: "POST", body: form, headers: keyHeaders() });
-      const body = (await res.json()) as { id?: string; error?: string };
-      stopBuildingAnimation();
+      const body = (await res.json()) as { id?: string; error?: string; expectedDurationMs?: number };
       if (res.ok && body.id) {
-        const record = await loadBuild(body.id);
-        setStage(record?.status === "review" ? "review" : "failed");
+        // Build accepted — it runs in the background; the poll effect tracks it.
+        if (body.expectedDurationMs) {
+          setLocalProgress((prev) => ({ start: prev?.start ?? Date.now(), expected: body.expectedDurationMs! }));
+        }
         setComments({});
         setOpenComment({});
+        await loadBuild(body.id);
+        setStage("building");
         window.scrollTo({ top: 0 });
       } else {
+        stopBuildingAnimation();
         setError(body.error ?? `Request failed (${res.status})`);
-        setStage(body.id ? "failed" : "form");
+        setStage("form");
       }
     } catch {
       stopBuildingAnimation();
@@ -221,6 +254,7 @@ export default function BuildWizardPage() {
     setSubmitting(true);
     setError(null);
     startBuildingAnimation();
+    setLocalProgress({ start: Date.now(), expected: build.expectedDurationMs ?? 180_000 });
     try {
       const res = await fetch(`/api/builds/${build.id}/review`, {
         method: "POST",
@@ -228,14 +262,15 @@ export default function BuildWizardPage() {
         body: JSON.stringify({ comments: list }),
       });
       const body = (await res.json()) as { error?: string };
-      stopBuildingAnimation();
       if (res.ok) {
-        await loadBuild(build.id);
+        // Revision accepted — background; the poll effect brings back v(N+1).
         setComments({});
         setOpenComment({});
-        setStage("review");
+        await loadBuild(build.id);
+        setStage("building");
         window.scrollTo({ top: 0 });
       } else {
+        stopBuildingAnimation();
         setError(body.error ?? `Review failed (${res.status})`);
         setStage("review");
       }
@@ -272,8 +307,11 @@ export default function BuildWizardPage() {
 
   const header = (
     <div>
-      <Link href={`/clients/${clientId}`} className="text-xs font-medium text-slate-500 hover:text-slate-900">
-        ← {clientName}
+      <Link
+        href={`/clients/${clientId}`}
+        className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-slate-900"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" /> {clientName}
       </Link>
       <h1 className="mt-1 text-2xl font-semibold">
         Build your {docType.toUpperCase()} template
@@ -289,13 +327,49 @@ export default function BuildWizardPage() {
   }
 
   if (stage === "building") {
+    // Server truth wins; the local estimate covers the moment before the
+    // created record arrives.
+    const startedAt = build?.generationStartedAt
+      ? Date.parse(build.generationStartedAt)
+      : (localProgress?.start ?? nowTick);
+    const expected = build?.expectedDurationMs ?? localProgress?.expected ?? 180_000;
+    const elapsed = Math.max(0, nowTick - startedAt);
+    const percent = Math.min(96, Math.round((elapsed / expected) * 96));
+    const remaining = expected - elapsed;
+    const remainingLabel =
+      remaining > 90_000
+        ? `about ${Math.round(remaining / 60_000)} min left`
+        : remaining > 5_000
+          ? `about ${Math.round(remaining / 1000)}s left`
+          : "taking a little longer than usual — still working…";
+
     return (
-      <div className="mx-auto max-w-xl py-20 text-center">
-        <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-[#1F3A5F]" />
-        <h1 className="mt-6 text-xl font-semibold">Building your {docType.toUpperCase()} template</h1>
-        <p className="mt-3 text-sm text-slate-600">{buildingMessage}</p>
-        <p className="mt-6 text-xs text-slate-400">
-          This can take a few minutes — the model analyses your materials carefully. Leave this tab open.
+      <div className="mx-auto max-w-xl py-20">
+        <h1 className="text-center text-xl font-semibold">Building your {docType.toUpperCase()} template</h1>
+        <div className="mt-8">
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+            <div
+              className="h-full rounded-full bg-[#1F3A5F] transition-all duration-1000 ease-linear"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+            <span>{percent}%</span>
+            <span>{remainingLabel}</span>
+          </div>
+        </div>
+        <p className="mt-6 text-center text-sm text-slate-600">{buildingMessage}</p>
+        <p className="mt-8 text-center text-xs text-slate-400">
+          The estimate comes from your previous build times. You don&apos;t need to stay — the build keeps running
+          in the background.
+        </p>
+        <p className="mt-3 text-center">
+          <Link
+            href={`/clients/${clientId}`}
+            className="inline-flex items-center gap-1 text-sm font-medium text-[#1F3A5F] hover:underline"
+          >
+            <ArrowLeft className="h-4 w-4" /> Back to {clientName} — check progress any time from there
+          </Link>
         </p>
       </div>
     );
@@ -315,9 +389,9 @@ export default function BuildWizardPage() {
             setError(null);
             setStage("form");
           }}
-          className="rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white"
+          className="inline-flex items-center gap-1.5 rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white"
         >
-          Try again
+          <RefreshCw className="h-4 w-4" /> Try again
         </button>
       </div>
     );
@@ -327,35 +401,43 @@ export default function BuildWizardPage() {
     return (
       <div className="space-y-6">
         {header}
-        <div className="rounded-lg border border-green-200 bg-green-50 p-6">
-          <h2 className="text-lg font-semibold text-green-900">Template finalised ✓</h2>
-          <p className="mt-2 text-sm text-green-800">
+        <div className="rounded-lg border border-slate-200 border-l-4 border-l-emerald-600 bg-white p-6 shadow-sm">
+          <h2 className="inline-flex items-center gap-2 text-lg font-semibold text-emerald-700">
+            <BadgeCheck className="h-5 w-5" /> Template finalised
+          </h2>
+          <p className="mt-2 text-sm text-slate-700">
             This is now {clientName}&apos;s {docType.toUpperCase()} template — every {docType.toUpperCase()} you
             generate for them renders with it.
           </p>
           <div className="mt-4 flex flex-wrap gap-3">
             <a
               href={`/api/builds/${build.id}/download`}
-              className="rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white"
+              className="inline-flex items-center gap-1.5 rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white"
             >
-              Download Word (.docx)
+              <FileDown className="h-4 w-4" /> Download Word (.docx)
             </a>
             <a
               href={`/builds/${build.id}/print`}
               target="_blank"
               rel="noopener"
-              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-slate-400"
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-slate-400"
             >
-              Download PDF (print view)
+              <Printer className="h-4 w-4" /> Download PDF (print view)
             </a>
             <Link
-              href={`/runs/new?client=${clientId}&docType=${docType}`}
-              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-slate-400"
+              href={`/clients/${clientId}/generate/${docType}?template=${build.id}`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-slate-400"
             >
-              Generate a document with it →
+              Generate a document with it <ArrowRight className="h-4 w-4" />
+            </Link>
+            <Link
+              href={`/clients/${clientId}/templates/${docType}`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:border-slate-400"
+            >
+              <Layers className="h-4 w-4" /> View all versions
             </Link>
           </div>
-          <p className="mt-3 text-xs text-green-700">
+          <p className="mt-3 text-xs text-slate-500">
             The PDF option opens a print view — use your browser&apos;s &quot;Save as PDF&quot;.
           </p>
         </div>
@@ -462,17 +544,17 @@ export default function BuildWizardPage() {
                 <button
                   onClick={() => void submitReview()}
                   disabled={submitting || commentCount === 0}
-                  className="rounded-md border border-[#1F3A5F] px-4 py-2 text-sm font-medium text-[#1F3A5F] disabled:opacity-40"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[#1F3A5F] px-4 py-2 text-sm font-medium text-[#1F3A5F] disabled:opacity-40"
                 >
-                  Submit review ({roundsLeft} left)
+                  <Send className="h-4 w-4" /> Submit review ({roundsLeft} left)
                 </button>
               )}
               <button
                 onClick={() => void finalize()}
                 disabled={submitting}
-                className="rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
               >
-                Looks good — build the final
+                <CheckCircle2 className="h-4 w-4" /> Looks good — build the final
               </button>
             </div>
           </div>
@@ -542,6 +624,17 @@ export default function BuildWizardPage() {
         </div>
 
         <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="font-semibold">Template name <span className="font-normal text-slate-400">(optional)</span></h2>
+          <input
+            value={templateName}
+            onChange={(e) => setTemplateName(e.target.value)}
+            maxLength={80}
+            placeholder={`e.g. "${docType.toUpperCase()} — head office branding". Left blank, it gets a numbered name you can rename later.`}
+            className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-[#1F3A5F] focus:outline-none"
+          />
+        </div>
+
+        <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="font-semibold">3. How should the template look? <span className="font-normal text-red-500">*</span></h2>
           <textarea
             required
@@ -589,9 +682,9 @@ export default function BuildWizardPage() {
         <button
           type="submit"
           disabled={references.length === 0 || !brief.trim()}
-          className="rounded-md bg-[#1F3A5F] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md bg-[#1F3A5F] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50"
         >
-          Build my template
+          <Wand2 className="h-4 w-4" /> Build my template
         </button>
         <p className="text-xs text-slate-500">
           You&apos;ll get a preview to review — up to {MAX_REVIEW_ROUNDS} revision rounds before the final.

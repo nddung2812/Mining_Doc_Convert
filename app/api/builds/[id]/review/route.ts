@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { MAX_REVIEW_ROUNDS } from "@/lib/types";
 import { getStorage } from "@/lib/storage";
-import { ExtractionError, resolveEngine } from "@/lib/engine";
+import { resolveEngine } from "@/lib/engine";
 import { runTemplateDesign } from "@/lib/template-engine";
 import { designInputFromBuild, latestSpec, parseFeedback, reviewRoundsUsed } from "@/lib/builds";
 import { apiSpendTodayUsd, buildApiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
@@ -64,26 +64,42 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const reviewed = build.iterations[build.iterations.length - 1];
   reviewed.feedback = feedback;
   reviewed.reviewedAt = new Date().toISOString();
+  build.status = "generating";
+  build.error = null;
+  build.generationStartedAt = reviewed.reviewedAt;
+  build.updatedAt = reviewed.reviewedAt;
   await storage.saveBuild(build);
 
-  try {
-    const output = await runTemplateDesign(await designInputFromBuild(build, { previousSpec, feedback }), choice);
-    build.iterations.push({
-      version: reviewed.version + 1,
-      createdAt: new Date().toISOString(),
-      spec: output.spec,
-      engine: output.engine,
-      model: output.model,
-      usage: output.usage,
-      costUsd: estimateCostUsd(output),
-      feedback: null,
-      reviewedAt: null,
-    });
+  // The revision runs after the response; the wizard (or workspace) polls.
+  after(async () => {
+    const started = Date.now();
+    try {
+      const output = await runTemplateDesign(await designInputFromBuild(build, { previousSpec, feedback }), choice);
+      build.iterations.push({
+        version: reviewed.version + 1,
+        createdAt: new Date().toISOString(),
+        durationMs: Date.now() - started,
+        spec: output.spec,
+        engine: output.engine,
+        model: output.model,
+        usage: output.usage,
+        costUsd: estimateCostUsd(output),
+        feedback: null,
+        reviewedAt: null,
+      });
+    } catch (e) {
+      // The round failed but the build survives — the previous iteration stands.
+      build.error = `Revision failed: ${e instanceof Error ? e.message : "unknown error"}. Your last version is untouched — submit the review again.`;
+    }
+    build.status = "review";
+    build.generationStartedAt = null;
+    build.updatedAt = new Date().toISOString();
     await storage.saveBuild(build);
-    return NextResponse.json({ id: build.id, version: reviewed.version + 1, roundsLeft: MAX_REVIEW_ROUNDS - used - 1 });
-  } catch (e) {
-    // The round failed but the build survives — the previous iteration stands.
-    const message = e instanceof Error ? e.message : "Template revision failed";
-    return NextResponse.json({ error: message }, { status: e instanceof ExtractionError ? 502 : 500 });
-  }
+  });
+
+  return NextResponse.json({
+    id: build.id,
+    status: "generating",
+    roundsLeft: MAX_REVIEW_ROUNDS - used - 1,
+  });
 }

@@ -55,6 +55,17 @@ export async function POST(request: NextRequest) {
   }
   if (!clientName) return NextResponse.json({ error: "Missing client name" }, { status: 400 });
 
+  // An explicit template choice must be a finalized build of this client+type.
+  let templateBuildId: string | null = null;
+  const templateBuildIdRaw = String(form.get("templateBuildId") ?? "").trim();
+  if (templateBuildIdRaw) {
+    const build = await storage.getBuild(templateBuildIdRaw);
+    if (!build || build.status !== "final" || build.clientId !== clientId || build.docType !== docType) {
+      return NextResponse.json({ error: "Chosen template is not a finalised template for this client and doc type" }, { status: 400 });
+    }
+    templateBuildId = build.id;
+  }
+
   // Cost guardrail: block new paid-engine runs once today's spend hits the cap.
   let choice;
   try {
@@ -97,6 +108,7 @@ export async function POST(request: NextRequest) {
     clientId,
     clientName,
     docType,
+    templateBuildId,
     source: {
       filename: file.name,
       bytes: sourceBuffer.length,

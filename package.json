@@ -19,6 +19,7 @@
     "docx": "^9.7.1",
     "docxtemplater": "^3.69.0",
     "eve": "0.25.1",
+    "lucide-react": "^1.25.0",
     "mammoth": "^1.12.0",
     "next": "16.2.10",
     "pizzip": "^3.2.0",

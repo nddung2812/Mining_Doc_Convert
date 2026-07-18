@@ -31,6 +31,8 @@ export interface RunRecord {
   clientId: string | null;
   clientName: string;
   docType: DocType;
+  /** The specific built template chosen for this run; null/absent -> client default or master. */
+  templateBuildId?: string | null;
   source: { filename: string; bytes: number; sha256: string };
   promptVersion: string;
   schemaVersion: string;
@@ -77,6 +79,8 @@ export interface SectionFeedback {
 export interface BuildIteration {
   version: number;
   createdAt: string;
+  /** Wall-clock time the design round took; feeds progress estimates. */
+  durationMs?: number;
   spec: TemplateSpec;
   engine: EngineId;
   model: string;
@@ -92,8 +96,14 @@ export interface TemplateBuildRecord {
   clientId: string;
   clientName: string;
   docType: DocType;
+  /** User-facing template name; renameable. Clients can hold several per doc type. */
+  name: string;
   createdAt: string;
+  /** Heartbeat for stale-build rescue; bumped on every state change. */
+  updatedAt?: string;
   status: BuildStatus;
+  /** Set while a design round runs in the background; null otherwise. */
+  generationStartedAt?: string | null;
   /** The user's message describing how the template should look. */
   brief: string;
   provider: BuildProvider;

@@ -3,14 +3,22 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Building2, ChevronRight, Coins, Plus } from "lucide-react";
 import type { ClientRecord } from "@/lib/types";
 import { DOC_TYPE_NAMES, type DocType } from "@/lib/types";
 
 const DOC_TYPES = Object.keys(DOC_TYPE_NAMES) as DocType[];
 
+/** Clients API enriches each record with template spend + in-progress builds. */
+type ClientWithSpend = ClientRecord & { templateSpendUsd?: number; buildingCount?: number };
+
+function formatUsd(v: number): string {
+  return v > 0 && v < 0.01 ? "<US$0.01" : `US$${v.toFixed(2)}`;
+}
+
 export default function ClientsHomePage() {
   const router = useRouter();
-  const [clients, setClients] = useState<ClientRecord[] | null>(null);
+  const [clients, setClients] = useState<ClientWithSpend[] | null>(null);
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -18,7 +26,7 @@ export default function ClientsHomePage() {
   useEffect(() => {
     void fetch("/api/clients")
       .then((r) => (r.ok ? r.json() : []))
-      .then((list) => setClients(list as ClientRecord[]))
+      .then((list) => setClients(list as ClientWithSpend[]))
       .catch(() => setClients([]));
   }, []);
 
@@ -67,9 +75,9 @@ export default function ClientsHomePage() {
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded-md bg-[#1F3A5F] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-[#1F3A5F] px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
           >
-            {busy ? "Creating…" : "Create client"}
+            <Plus className="h-4 w-4" /> {busy ? "Creating…" : "Create client"}
           </button>
         </form>
       </div>
@@ -94,9 +102,9 @@ export default function ClientsHomePage() {
           <button
             type="submit"
             disabled={busy}
-            className="rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            Add client
+            <Plus className="h-4 w-4" /> Add client
           </button>
         </form>
       </div>
@@ -110,14 +118,35 @@ export default function ClientsHomePage() {
             <Link
               key={client.id}
               href={`/clients/${client.id}`}
-              className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm transition hover:border-[#1F3A5F] hover:shadow"
+              className="group rounded-lg border border-slate-200 bg-white p-5 shadow-sm transition hover:border-[#1F3A5F] hover:shadow"
             >
-              <h2 className="font-semibold text-slate-900">{client.name}</h2>
+              <h2 className="flex items-center justify-between font-semibold text-slate-900">
+                <span className="inline-flex items-center gap-2">
+                  <Building2 className="h-4 w-4 text-slate-400" /> {client.name}
+                </span>
+                <ChevronRight className="h-4 w-4 text-slate-300 transition group-hover:text-[#1F3A5F]" />
+              </h2>
               <p className="mt-1 text-xs text-slate-500">
                 Added {new Date(client.createdAt).toLocaleDateString()}
               </p>
-              <p className="mt-3 inline-block rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">
-                {ready} of {DOC_TYPES.length} templates ready
+              <p className="mt-3 flex flex-wrap items-center gap-2">
+                <span
+                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    ready > 0 ? "bg-emerald-700 text-white" : "bg-slate-100 text-slate-700"
+                  }`}
+                >
+                  {ready} of {DOC_TYPES.length} templates ready
+                </span>
+                {(client.buildingCount ?? 0) > 0 && (
+                  <span className="inline-block rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800">
+                    {client.buildingCount === 1 ? "1 build in progress" : `${client.buildingCount} builds in progress`}
+                  </span>
+                )}
+                {(client.templateSpendUsd ?? 0) > 0 && (
+                  <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                    <Coins className="h-3.5 w-3.5" /> {formatUsd(client.templateSpendUsd!)} est. template spend
+                  </span>
+                )}
               </p>
             </Link>
           );

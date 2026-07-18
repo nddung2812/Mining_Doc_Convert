@@ -16,7 +16,8 @@ export default async function RunsPage() {
 
       {runs.length === 0 ? (
         <p className="mt-8 rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
-          No runs yet. <Link href="/runs/new" className="text-[#1F3A5F] underline">Start one</Link>.
+          No documents yet. <Link href="/" className="text-[#1F3A5F] underline">Pick a client</Link> and generate one
+          from their workspace.
         </p>
       ) : (
         <div className="mt-6 overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -44,7 +45,7 @@ export default async function RunsPage() {
                   <td className="px-4 py-3">{DOC_TYPE_NAMES[run.docType]}</td>
                   <td className="px-4 py-3">
                     {run.status === "complete" ? (
-                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">approved</span>
+                      <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-xs font-medium text-white">approved</span>
                     ) : run.status === "awaiting_review" ? (
                       <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">awaiting review</span>
                     ) : (

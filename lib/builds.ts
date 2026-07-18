@@ -33,6 +33,61 @@ export function latestSpec(build: TemplateBuildRecord): TemplateSpec | null {
   return build.iterations.length ? build.iterations[build.iterations.length - 1].spec : null;
 }
 
+/** Estimated model spend on this build across every design round. */
+export function buildSpendUsd(build: TemplateBuildRecord): number {
+  return build.iterations.reduce((sum, i) => sum + (i.costUsd ?? 0), 0);
+}
+
+/**
+ * Longest a design round can legitimately run (CLI engine timeout is 10 min);
+ * past this, the background worker is dead (crash/restart), not slow.
+ */
+const STALE_GENERATING_MS = 15 * 60_000;
+
+/** Fallback expectation before any real duration history exists. */
+const DEFAULT_ROUND_MS = 180_000;
+
+/**
+ * Expected duration of a design round, from real history: median of recorded
+ * round durations for the same model, else any model, else a fixed default.
+ */
+export function expectedRoundMs(allBuilds: TemplateBuildRecord[], model: string): number {
+  const durations = (filter: (b: TemplateBuildRecord) => boolean) =>
+    allBuilds
+      .filter(filter)
+      .flatMap((b) => b.iterations)
+      .map((i) => i.durationMs)
+      .filter((d): d is number => typeof d === "number" && d > 0)
+      .sort((a, b) => a - b);
+  const sameModel = durations((b) => b.model === model);
+  const pool = sameModel.length > 0 ? sameModel : durations(() => true);
+  return pool.length > 0 ? pool[Math.floor(pool.length / 2)] : DEFAULT_ROUND_MS;
+}
+
+/**
+ * Self-healing for builds whose background worker died mid-round: without
+ * this they would sit in "generating" forever and block review/finalize.
+ */
+export async function rescueStaleBuild(build: TemplateBuildRecord): Promise<TemplateBuildRecord> {
+  if (build.status !== "generating") return build;
+  const lastBeat = Date.parse(build.updatedAt ?? build.generationStartedAt ?? build.createdAt);
+  if (Number.isFinite(lastBeat) && Date.now() - lastBeat < STALE_GENERATING_MS) return build;
+
+  const message = "The design round was interrupted (server stopped mid-build).";
+  if (build.iterations.length > 0) {
+    // A revision died — the previous version still stands.
+    build.status = "review";
+    build.error = `${message} Your last version is untouched — submit the review again.`;
+  } else {
+    build.status = "failed";
+    build.error = message;
+  }
+  build.generationStartedAt = null;
+  build.updatedAt = new Date().toISOString();
+  await getStorage().saveBuild(build);
+  return build;
+}
+
 /** Reviewers may also comment on the fixed page footer. */
 export function parseFeedback(docType: DocType, raw: unknown): SectionFeedback[] | null {
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > 50) return null;

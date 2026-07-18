@@ -1,12 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStorage } from "@/lib/storage";
 import { slugify } from "@/lib/clients";
+import { buildSpendUsd } from "@/lib/builds";
 import type { ClientRecord } from "@/lib/types";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  return NextResponse.json(await getStorage().listClients());
+  const storage = getStorage();
+  const [clients, builds] = await Promise.all([storage.listClients(), storage.listBuilds()]);
+  const spendByClient = new Map<string, number>();
+  const buildingByClient = new Map<string, number>();
+  for (const build of builds) {
+    spendByClient.set(build.clientId, (spendByClient.get(build.clientId) ?? 0) + buildSpendUsd(build));
+    if (build.status === "generating") {
+      buildingByClient.set(build.clientId, (buildingByClient.get(build.clientId) ?? 0) + 1);
+    }
+  }
+  return NextResponse.json(
+    clients.map((c) => ({
+      ...c,
+      templateSpendUsd: spendByClient.get(c.id) ?? 0,
+      buildingCount: buildingByClient.get(c.id) ?? 0,
+    })),
+  );
 }
 
 export async function POST(request: NextRequest) {

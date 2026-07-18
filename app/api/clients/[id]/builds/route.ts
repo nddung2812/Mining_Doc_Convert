@@ -1,10 +1,10 @@
 import { randomUUID } from "crypto";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { isDocType, type BuildMaterialFile, type BuildProvider, type TemplateBuildRecord } from "@/lib/types";
 import { getStorage } from "@/lib/storage";
-import { ExtractionError, resolveEngine } from "@/lib/engine";
+import { resolveEngine } from "@/lib/engine";
 import { runTemplateDesign } from "@/lib/template-engine";
-import { designInputFromBuild, sanitizeFilename } from "@/lib/builds";
+import { buildSpendUsd, designInputFromBuild, expectedRoundMs, rescueStaleBuild, sanitizeFilename } from "@/lib/builds";
 import { parseLogo } from "@/lib/template-compile";
 import { apiSpendTodayUsd, buildApiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
 
@@ -17,8 +17,19 @@ const GUIDE_EXTENSIONS = /\.(docx|pdf|txt|md|markdown)$/i;
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const builds = (await getStorage().listBuilds()).filter((b) => b.clientId === id);
-  return NextResponse.json(builds);
+  const all = await getStorage().listBuilds();
+  const builds = await Promise.all(
+    all.filter((b) => b.clientId === id).map((b) => rescueStaleBuild(b)),
+  );
+  return NextResponse.json(
+    builds.map((b) => ({
+      ...b,
+      // Builds predating template naming get a readable fallback.
+      name: b.name || `${b.docType.toUpperCase()} template`,
+      spendUsd: buildSpendUsd(b),
+      expectedDurationMs: expectedRoundMs(all, b.model),
+    })),
+  );
 }
 
 /**
@@ -115,11 +126,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return { filename: stored, bytes: file.size };
   };
 
+  const priorForType = (await storage.listBuilds()).filter(
+    (b) => b.clientId === client.id && b.docType === docType,
+  ).length;
+  const name =
+    String(form.get("name") ?? "").trim().slice(0, 80) || `${docType.toUpperCase()} template ${priorForType + 1}`;
+
   const build: TemplateBuildRecord = {
     id: buildId,
     clientId: client.id,
     clientName: client.name,
     docType,
+    name,
     createdAt: new Date().toISOString(),
     status: "generating",
     brief,
@@ -140,33 +158,42 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     await storage.saveBuildFile(buildId, stored, logoBuffer);
     build.materials.logo = { filename: stored, bytes: logoBuffer.length };
   }
+  build.generationStartedAt = build.createdAt;
+  build.updatedAt = build.createdAt;
   await storage.saveBuild(build);
 
-  try {
-    const output = await runTemplateDesign(await designInputFromBuild(build), choice);
-    build.status = "review";
-    build.model = output.model;
-    build.iterations.push({
-      version: 1,
-      createdAt: new Date().toISOString(),
-      spec: output.spec,
-      engine: output.engine,
-      model: output.model,
-      usage: output.usage,
-      costUsd: estimateCostUsd(output),
-      feedback: null,
-      reviewedAt: null,
-    });
+  // The design round runs after the response — the user can navigate away and
+  // track progress from the client workspace; the wizard polls build status.
+  after(async () => {
+    const started = Date.now();
+    try {
+      const output = await runTemplateDesign(await designInputFromBuild(build), choice);
+      build.status = "review";
+      build.model = output.model;
+      build.iterations.push({
+        version: 1,
+        createdAt: new Date().toISOString(),
+        durationMs: Date.now() - started,
+        spec: output.spec,
+        engine: output.engine,
+        model: output.model,
+        usage: output.usage,
+        costUsd: estimateCostUsd(output),
+        feedback: null,
+        reviewedAt: null,
+      });
+    } catch (e) {
+      build.status = "failed";
+      build.error = e instanceof Error ? e.message : "Template design failed";
+    }
+    build.generationStartedAt = null;
+    build.updatedAt = new Date().toISOString();
     await storage.saveBuild(build);
-    return NextResponse.json({ id: buildId, status: build.status });
-  } catch (e) {
-    const message = e instanceof Error ? e.message : "Template design failed";
-    build.status = "failed";
-    build.error = message;
-    await storage.saveBuild(build);
-    return NextResponse.json(
-      { id: buildId, status: "failed", error: message },
-      { status: e instanceof ExtractionError ? 502 : 500 },
-    );
-  }
+  });
+
+  return NextResponse.json({
+    id: buildId,
+    status: build.status,
+    expectedDurationMs: expectedRoundMs(await storage.listBuilds(), choice.model),
+  });
 }
