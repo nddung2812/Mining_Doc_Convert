@@ -1,0 +1,86 @@
+{
+  "$id": "ra",
+  "version": "1.0.0",
+  "title": "Risk Assessment extraction schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["document", "meta"],
+  "properties": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "doc_number",
+        "revision",
+        "client_name",
+        "site",
+        "activity",
+        "assessment_date",
+        "assessors",
+        "methodology",
+        "risk_items",
+        "references"
+      ],
+      "properties": {
+        "title": { "type": "string", "description": "Document title. NOT_FOUND if absent." },
+        "doc_number": { "type": "string", "description": "Document number, verbatim. NOT_FOUND if absent." },
+        "revision": { "type": "string", "description": "Revision/version. NOT_FOUND if absent." },
+        "client_name": { "type": "string", "description": "Client/company name. NOT_FOUND if absent." },
+        "site": { "type": "string", "description": "Site/mine/location. NOT_FOUND if absent." },
+        "activity": { "type": "string", "description": "Activity/task being assessed. NOT_FOUND if absent." },
+        "assessment_date": { "type": "string", "description": "Date of assessment, verbatim. NOT_FOUND if absent." },
+        "assessors": {
+          "type": "array",
+          "description": "People who conducted the assessment (name and role if given). Empty array if none.",
+          "items": { "type": "string" }
+        },
+        "methodology": { "type": "string", "description": "Risk methodology / matrix described in the source. NOT_FOUND if absent." },
+        "risk_items": {
+          "type": "array",
+          "description": "Risk register rows. SAFETY-CRITICAL: never invent hazards, ratings, or controls.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["hazard", "associated_risk", "initial_risk", "controls", "residual_risk", "control_owner"],
+            "properties": {
+              "hazard": { "type": "string" },
+              "associated_risk": { "type": "string", "description": "What could go wrong / consequence." },
+              "initial_risk": { "type": "string", "description": "Initial/inherent risk rating as stated. NOT_FOUND if not stated." },
+              "controls": { "type": "string" },
+              "residual_risk": { "type": "string", "description": "Residual risk rating as stated. NOT_FOUND if not stated." },
+              "control_owner": { "type": "string", "description": "Person/role responsible. NOT_FOUND if not stated." }
+            }
+          }
+        },
+        "references": {
+          "type": "array",
+          "description": "Referenced standards, legislation, and documents, verbatim. Empty array if none.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_confidence", "not_found", "warnings"],
+      "properties": {
+        "field_confidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "level", "note"],
+            "properties": {
+              "field": { "type": "string" },
+              "level": { "type": "string", "enum": ["high", "medium", "low"] },
+              "note": { "type": "string" }
+            }
+          }
+        },
+        "not_found": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

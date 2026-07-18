@@ -6,10 +6,19 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "templates": "node scripts/generate-templates.mjs",
+    "test:render": "node scripts/test-render.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.3",
+    "@vercel/blob": "^2.6.1",
+    "ajv": "^8.20.0",
+    "docx": "^9.7.1",
+    "docxtemplater": "^3.69.0",
+    "mammoth": "^1.12.0",
     "next": "16.2.10",
+    "pizzip": "^3.2.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },

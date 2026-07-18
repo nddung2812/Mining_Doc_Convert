@@ -1,36 +1,93 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MDocConvert — Mining Doc Factory (MVP)
 
-## Getting Started
+Automated drafting of client-branded mining compliance documents (SOP, RA, HMP) from raw client
+source content — with a mandatory human reviewer. Styling is deterministic (docx templates),
+content is AI-extracted (one structured call per document), and a qualified person approves every
+document before it ships. The AI never touches formatting; the template never touches content.
 
-First, run the development server:
+## Architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+source (.docx/.txt/.md)
+   │  mammoth / utf8
+   ▼
+extraction engine ──► schema-validated JSON (confidence flags, NOT_FOUND markers, warnings)
+   │                        │
+   │                        ▼
+   │                 docxtemplater + templates/<type>.docx  ──► draft .docx
+   ▼
+audit record (source hash, prompt/schema/template versions, model, tokens, cost, downloads)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Two swappable extraction engines:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Engine | When | Billing |
+|---|---|---|
+| `cli` — Claude Code CLI (`claude -p`) | Local dev only, no API key configured | Covered by your Claude subscription |
+| `api` — Anthropic API | Deployed, or whenever a key is present | Server key (`ANTHROPIC_API_KEY`) or **bring-your-own key** entered per-user in Settings |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Resolution order: per-request BYOK key → `ANTHROPIC_API_KEY` → CLI (local only). Deployed users
+without a key get a clear "bring your own key" error — your subscription is never exposed.
 
-## Learn More
+## Plain-file contracts (deliberately not code)
 
-To learn more about Next.js, take a look at the following resources:
+- `prompts/extract.md` — the extraction prompt, versioned via its header comment.
+- `schemas/*.schema.json` — one JSON Schema per doc type, versioned via a `version` field. This is
+  the domain document the expert signs off on.
+- `templates/*.docx` — docxtemplater masters. Currently generated placeholders
+  (`npm run templates`); after the Phase 0 diff exercise, replace them with pixel-faithful
+  client-branded versions **keeping the same `{tags}`** and everything keeps working.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Every run records which prompt/schema/template version produced it.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Local development
 
-## Deploy on Vercel
+```bash
+npm install
+npm run dev          # http://localhost:3000
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+With no `ANTHROPIC_API_KEY` set, extraction shells out to your logged-in `claude` CLI (Max
+subscription). Auth is disabled while `APP_PASSWORD` is unset. Runs are stored in `./data/runs/`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Pipeline tests without spending anything:
+
+```bash
+npm run templates    # regenerate templates/*.docx
+npm run test:render  # render all three with dummy data → data/test-output/
+```
+
+## Deploying to Vercel
+
+1. Push this repo to GitHub and import it in Vercel (or `vercel deploy`).
+2. Set environment variables (see `.env.example`):
+   - `APP_PASSWORD` — **required**; these are client compliance docs, never deploy open.
+   - `DAILY_COST_CAP_USD` — daily API spend cap (default 10).
+   - `ANTHROPIC_API_KEY` — optional; leave unset to force every user to bring their own key
+     (Settings page), which is the intended multi-user model.
+3. Attach a **Vercel Blob** store to the project (Storage tab). `BLOB_READ_WRITE_TOKEN` is injected
+   automatically and the app switches from filesystem to Blob storage.
+
+## Non-negotiables baked in
+
+- **No hallucinated safety content**: the prompt demands `NOT_FOUND` over guessing; extraction is
+  schema-validated; every gap and low-confidence field is flagged in the UI and rendered as
+  `«NOT FOUND — REVIEW REQUIRED»` in the draft; every draft carries a DRAFT footer.
+- **Audit log per run**: source filename + SHA-256, prompt/schema/template versions, engine, model,
+  token usage, cost, extracted JSON, and download timestamps.
+- **Cost guardrail**: API-engine runs stop for the day once `DAILY_COST_CAP_USD` is reached.
+- **Auth**: password gate on every page and API route when `APP_PASSWORD` is set.
+
+## Data handling (decide consciously before onboarding a client)
+
+Uploaded source content and extracted JSON are stored in Vercel Blob (deployed) or `./data`
+(local) with no automatic retention limit, and source content is sent to Anthropic's API for
+extraction. Get the client's written sign-off on this flow before processing their documents.
+
+## Roadmap (matches the build plan)
+
+- Phase 0/1: replace placeholder templates + schemas with expert-signed versions; run the golden
+  test (3 previously approved docs re-run through the pipeline; target ≤20 min review, zero
+  hallucinated safety fields).
+- Phase 3: batch queue, in-app review + approval lock, template/schema version pinning per client,
+  PDF source support.

@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# MDocConvert runtime data (run records, uploads, rendered docs)
+/data/

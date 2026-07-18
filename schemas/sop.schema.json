@@ -1,0 +1,137 @@
+{
+  "$id": "sop",
+  "version": "1.0.0",
+  "title": "Standard Operating Procedure extraction schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["document", "meta"],
+  "properties": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "doc_number",
+        "revision",
+        "client_name",
+        "site",
+        "effective_date",
+        "review_date",
+        "purpose",
+        "scope",
+        "definitions",
+        "responsibilities",
+        "ppe_requirements",
+        "procedure_steps",
+        "hazards",
+        "references"
+      ],
+      "properties": {
+        "title": { "type": "string", "description": "Document title. Use the literal string NOT_FOUND if absent from the source." },
+        "doc_number": { "type": "string", "description": "Document number/identifier, verbatim from source. NOT_FOUND if absent." },
+        "revision": { "type": "string", "description": "Revision/version, verbatim from source. NOT_FOUND if absent." },
+        "client_name": { "type": "string", "description": "Client/company name. NOT_FOUND if absent." },
+        "site": { "type": "string", "description": "Site/mine/location this SOP applies to. NOT_FOUND if absent." },
+        "effective_date": { "type": "string", "description": "Effective/issue date, verbatim. NOT_FOUND if absent." },
+        "review_date": { "type": "string", "description": "Next review date, verbatim. NOT_FOUND if absent." },
+        "purpose": { "type": "string", "description": "Purpose of the procedure. May be lightly drafted from source content but must not introduce facts not in the source. NOT_FOUND if no basis in source." },
+        "scope": { "type": "string", "description": "Scope / who and what this applies to. NOT_FOUND if no basis in source." },
+        "definitions": {
+          "type": "array",
+          "description": "Terms and definitions found in the source. Empty array if none.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["term", "definition"],
+            "properties": {
+              "term": { "type": "string" },
+              "definition": { "type": "string" }
+            }
+          }
+        },
+        "responsibilities": {
+          "type": "array",
+          "description": "Roles and their duties. Empty array if none in source.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "duties"],
+            "properties": {
+              "role": { "type": "string" },
+              "duties": { "type": "string" }
+            }
+          }
+        },
+        "ppe_requirements": {
+          "type": "array",
+          "description": "Required PPE items, verbatim from source. SAFETY-CRITICAL: never invent. Empty array if none stated.",
+          "items": { "type": "string" }
+        },
+        "procedure_steps": {
+          "type": "array",
+          "description": "Ordered procedure steps. SAFETY-CRITICAL: content must come from the source; do not invent steps.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["step_number", "instruction", "warning"],
+            "properties": {
+              "step_number": { "type": "string" },
+              "instruction": { "type": "string" },
+              "warning": { "type": "string", "description": "Warning/caution attached to this step, verbatim. Empty string if none." }
+            }
+          }
+        },
+        "hazards": {
+          "type": "array",
+          "description": "Hazards and controls stated in the source. SAFETY-CRITICAL: never invent hazards or controls.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["hazard", "risk_level", "controls"],
+            "properties": {
+              "hazard": { "type": "string" },
+              "risk_level": { "type": "string", "description": "Risk level/rating as stated in source. NOT_FOUND if not stated." },
+              "controls": { "type": "string" }
+            }
+          }
+        },
+        "references": {
+          "type": "array",
+          "description": "Referenced standards, legislation, and documents, verbatim. Empty array if none.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_confidence", "not_found", "warnings"],
+      "properties": {
+        "field_confidence": {
+          "type": "array",
+          "description": "One entry per document field (dot-path, e.g. document.purpose).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "level", "note"],
+            "properties": {
+              "field": { "type": "string" },
+              "level": { "type": "string", "enum": ["high", "medium", "low"] },
+              "note": { "type": "string", "description": "Why confidence is below high. Empty string when high." }
+            }
+          }
+        },
+        "not_found": {
+          "type": "array",
+          "description": "Dot-paths of fields that were NOT_FOUND in the source.",
+          "items": { "type": "string" }
+        },
+        "warnings": {
+          "type": "array",
+          "description": "Anything the human reviewer must check (ambiguities, conflicts in source, possible OCR issues).",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

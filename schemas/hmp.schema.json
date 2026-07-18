@@ -1,0 +1,127 @@
+{
+  "$id": "hmp",
+  "version": "1.0.0",
+  "title": "Hazard Management Plan extraction schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["document", "meta"],
+  "properties": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "doc_number",
+        "revision",
+        "client_name",
+        "site",
+        "hazard_category",
+        "effective_date",
+        "review_date",
+        "purpose",
+        "scope",
+        "hazard_description",
+        "controls",
+        "monitoring",
+        "responsibilities",
+        "trigger_action_responses",
+        "references"
+      ],
+      "properties": {
+        "title": { "type": "string", "description": "Document title. NOT_FOUND if absent." },
+        "doc_number": { "type": "string", "description": "Document number, verbatim. NOT_FOUND if absent." },
+        "revision": { "type": "string", "description": "Revision/version. NOT_FOUND if absent." },
+        "client_name": { "type": "string", "description": "Client/company name. NOT_FOUND if absent." },
+        "site": { "type": "string", "description": "Site/mine/location. NOT_FOUND if absent." },
+        "hazard_category": { "type": "string", "description": "Principal hazard category this plan manages (e.g. ground control, inrush, fire). NOT_FOUND if absent." },
+        "effective_date": { "type": "string", "description": "Effective/issue date. NOT_FOUND if absent." },
+        "review_date": { "type": "string", "description": "Next review date. NOT_FOUND if absent." },
+        "purpose": { "type": "string", "description": "Purpose of the plan. NOT_FOUND if no basis in source." },
+        "scope": { "type": "string", "description": "Scope of the plan. NOT_FOUND if no basis in source." },
+        "hazard_description": { "type": "string", "description": "Description of the hazard and how it arises at this site. SAFETY-CRITICAL: source content only." },
+        "controls": {
+          "type": "array",
+          "description": "Control measures stated in the source. SAFETY-CRITICAL: never invent controls.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["control", "type", "owner"],
+            "properties": {
+              "control": { "type": "string" },
+              "type": { "type": "string", "description": "Hierarchy-of-control type if stated (elimination, substitution, engineering, administrative, PPE). NOT_FOUND if not stated." },
+              "owner": { "type": "string", "description": "Responsible person/role. NOT_FOUND if not stated." }
+            }
+          }
+        },
+        "monitoring": {
+          "type": "array",
+          "description": "Monitoring/inspection activities stated in the source. Empty array if none.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["activity", "frequency", "responsible"],
+            "properties": {
+              "activity": { "type": "string" },
+              "frequency": { "type": "string", "description": "NOT_FOUND if not stated." },
+              "responsible": { "type": "string", "description": "NOT_FOUND if not stated." }
+            }
+          }
+        },
+        "responsibilities": {
+          "type": "array",
+          "description": "Roles and duties. Empty array if none in source.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "duties"],
+            "properties": {
+              "role": { "type": "string" },
+              "duties": { "type": "string" }
+            }
+          }
+        },
+        "trigger_action_responses": {
+          "type": "array",
+          "description": "TARP rows: trigger levels and required actions. SAFETY-CRITICAL: source content only.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["trigger", "level", "response"],
+            "properties": {
+              "trigger": { "type": "string" },
+              "level": { "type": "string", "description": "Alert level/status as stated. NOT_FOUND if not stated." },
+              "response": { "type": "string" }
+            }
+          }
+        },
+        "references": {
+          "type": "array",
+          "description": "Referenced standards, legislation (e.g. QLD mining legislation), and documents, verbatim. Empty array if none.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_confidence", "not_found", "warnings"],
+      "properties": {
+        "field_confidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "level", "note"],
+            "properties": {
+              "field": { "type": "string" },
+              "level": { "type": "string", "enum": ["high", "medium", "low"] },
+              "note": { "type": "string" }
+            }
+          }
+        },
+        "not_found": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
