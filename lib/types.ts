@@ -51,6 +51,85 @@ export interface RunRecord {
   downloads: { at: string }[];
 }
 
+/** A guided template build: brand materials in, reviewed branded template out. */
+export type BuildStatus = "generating" | "review" | "final" | "failed";
+
+export type BuildProvider = "anthropic" | "google" | "openai";
+
+export interface BuildMaterialFile {
+  filename: string;
+  bytes: number;
+}
+
+export interface BuildMaterials {
+  logo: BuildMaterialFile | null;
+  fonts: BuildMaterialFile[];
+  styleGuides: BuildMaterialFile[];
+  /** 1–3 exemplar documents showing how the client wants the output to look. */
+  references: BuildMaterialFile[];
+}
+
+export interface SectionFeedback {
+  sectionId: string;
+  comment: string;
+}
+
+export interface BuildIteration {
+  version: number;
+  createdAt: string;
+  spec: TemplateSpec;
+  engine: EngineId;
+  model: string;
+  usage: RunRecord["usage"];
+  costUsd: number | null;
+  /** Review submitted against this version; null until the user submits one. */
+  feedback: SectionFeedback[] | null;
+  reviewedAt: string | null;
+}
+
+export interface TemplateBuildRecord {
+  id: string;
+  clientId: string;
+  clientName: string;
+  docType: DocType;
+  createdAt: string;
+  status: BuildStatus;
+  /** The user's message describing how the template should look. */
+  brief: string;
+  provider: BuildProvider;
+  model: string;
+  materials: BuildMaterials;
+  iterations: BuildIteration[];
+  final: { finalizedAt: string; templateFilename: string } | null;
+  error: string | null;
+}
+
+export const MAX_REVIEW_ROUNDS = 5;
+
+/** Layout/styling decisions the design model makes; content stays out of scope. */
+export interface TemplateSpec {
+  design_rationale: string;
+  typography: { heading_font: string; body_font: string; base_size_pt: number };
+  colors: {
+    accent: string;
+    table_header_fill: string;
+    table_border: string;
+    muted_text: string;
+  };
+  cover: {
+    style: "centered" | "left" | "banner";
+    show_logo: boolean;
+    logo_height_pt: number;
+    title_size_pt: number;
+    subtitle_text: string;
+    show_rule: boolean;
+  };
+  headings: { numbered: boolean; uppercase: boolean; size_pt: number; underline_rule: boolean };
+  tables: { style: "grid" | "striped" | "minimal"; header_text_color: string; border_weight: "hairline" | "light" | "medium" };
+  spacing: "compact" | "regular" | "airy";
+  sections: { id: string; title: string }[];
+}
+
 export const DOC_TYPE_NAMES: Record<DocType, string> = {
   sop: "Standard Operating Procedure",
   ra: "Risk Assessment",

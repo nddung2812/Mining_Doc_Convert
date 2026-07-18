@@ -2,7 +2,7 @@ import mammoth from "mammoth";
 
 const MAX_SOURCE_CHARS = 400_000;
 
-/** Extract plain text from an uploaded source file (.txt, .md, .docx). */
+/** Extract plain text from an uploaded source file (.txt, .md, .docx, .pdf). */
 export async function extractSourceText(filename: string, buffer: Buffer): Promise<string> {
   const ext = filename.toLowerCase().split(".").pop() ?? "";
   let text: string;
@@ -10,10 +10,15 @@ export async function extractSourceText(filename: string, buffer: Buffer): Promi
   if (ext === "docx") {
     const result = await mammoth.extractRawText({ buffer });
     text = result.value;
+  } else if (ext === "pdf") {
+    const { extractText, getDocumentProxy } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const result = await extractText(pdf, { mergePages: true });
+    text = result.text;
   } else if (ext === "txt" || ext === "md" || ext === "markdown") {
     text = buffer.toString("utf8");
   } else {
-    throw new Error(`Unsupported source file type ".${ext}". Upload .docx, .txt, or .md.`);
+    throw new Error(`Unsupported source file type ".${ext}". Upload .docx, .pdf, .txt, or .md.`);
   }
 
   text = text.trim();

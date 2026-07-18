@@ -57,7 +57,8 @@ export default function SettingsPage() {
           />
           <p className="mt-1 text-xs text-slate-500">
             One key unlocks every vendor&apos;s models (OpenAI, Google, xAI, Anthropic, …) in the model picker on the
-            New run page. Get one at vercel.com → AI Gateway → API keys. Billed to your gateway account — you can also
+            New document page and the Google/OpenAI design engines in the template builder. Get one at vercel.com →
+            AI Gateway → API keys. Billed to your gateway account — you can also
             attach your own vendor keys (BYOK) inside the gateway.
           </p>
         </div>

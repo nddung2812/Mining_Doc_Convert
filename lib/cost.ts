@@ -1,4 +1,4 @@
-import type { RunRecord } from "./types";
+import type { RunRecord, TemplateBuildRecord } from "./types";
 import type { EngineOutput } from "./engine";
 
 // USD per million tokens. Keyed by model-id prefix; first match wins.
@@ -9,7 +9,9 @@ const PRICING: { prefix: string; input: number; output: number; cacheWrite: numb
   { prefix: "claude-haiku", input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
 ];
 
-export function estimateCostUsd(output: EngineOutput): number | null {
+export function estimateCostUsd(
+  output: Pick<EngineOutput, "engine" | "model" | "usage" | "reportedCostUsd">,
+): number | null {
   if (output.engine === "cli") return output.reportedCostUsd; // informational; covered by subscription
   if (output.engine === "gateway") return output.reportedCostUsd; // computed from the gateway's live pricing catalog
   if (!output.usage) return null;
@@ -35,4 +37,13 @@ export function apiSpendTodayUsd(runs: RunRecord[]): number {
   return runs
     .filter((r) => (r.engine === "api" || r.engine === "gateway") && r.createdAt.slice(0, 10) === today)
     .reduce((sum, r) => sum + (r.costUsd ?? 0), 0);
+}
+
+/** Template-build iterations share the same daily cap as runs. */
+export function buildApiSpendTodayUsd(builds: TemplateBuildRecord[]): number {
+  const today = new Date().toISOString().slice(0, 10);
+  return builds
+    .flatMap((b) => b.iterations)
+    .filter((i) => (i.engine === "api" || i.engine === "gateway") && i.createdAt.slice(0, 10) === today)
+    .reduce((sum, i) => sum + (i.costUsd ?? 0), 0);
 }

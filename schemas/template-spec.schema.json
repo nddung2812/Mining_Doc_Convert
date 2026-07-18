@@ -1,0 +1,91 @@
+{
+  "$id": "template-spec",
+  "version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "design_rationale",
+    "typography",
+    "colors",
+    "cover",
+    "headings",
+    "tables",
+    "spacing",
+    "sections"
+  ],
+  "properties": {
+    "design_rationale": {
+      "type": "string",
+      "description": "2-4 sentences, addressed to the reviewer, explaining the key design choices and how they follow from the provided brand materials."
+    },
+    "typography": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["heading_font", "body_font", "base_size_pt"],
+      "properties": {
+        "heading_font": { "type": "string" },
+        "body_font": { "type": "string" },
+        "base_size_pt": { "type": "number", "description": "Body text size in points, 9-13." }
+      }
+    },
+    "colors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accent", "table_header_fill", "table_border", "muted_text"],
+      "properties": {
+        "accent": { "type": "string", "description": "6-digit hex without #. Headings, cover title, rules." },
+        "table_header_fill": { "type": "string", "description": "6-digit hex without #. Table header row background." },
+        "table_border": { "type": "string", "description": "6-digit hex without #." },
+        "muted_text": { "type": "string", "description": "6-digit hex without #. Subtitles, footer text." }
+      }
+    },
+    "cover": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["style", "show_logo", "logo_height_pt", "title_size_pt", "subtitle_text", "show_rule"],
+      "properties": {
+        "style": { "type": "string", "enum": ["centered", "left", "banner"] },
+        "show_logo": { "type": "boolean" },
+        "logo_height_pt": { "type": "number", "description": "Logo height in points, 30-120." },
+        "title_size_pt": { "type": "number", "description": "Document title size in points, 20-36." },
+        "subtitle_text": { "type": "string", "description": "Line under the client name, usually the document type name." },
+        "show_rule": { "type": "boolean", "description": "Horizontal accent rule on the cover." }
+      }
+    },
+    "headings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numbered", "uppercase", "size_pt", "underline_rule"],
+      "properties": {
+        "numbered": { "type": "boolean" },
+        "uppercase": { "type": "boolean" },
+        "size_pt": { "type": "number", "description": "Section heading size in points, 12-18." },
+        "underline_rule": { "type": "boolean", "description": "Thin accent rule under each section heading." }
+      }
+    },
+    "tables": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["style", "header_text_color", "border_weight"],
+      "properties": {
+        "style": { "type": "string", "enum": ["grid", "striped", "minimal"] },
+        "header_text_color": { "type": "string", "description": "6-digit hex without #." },
+        "border_weight": { "type": "string", "enum": ["hairline", "light", "medium"] }
+      }
+    },
+    "spacing": { "type": "string", "enum": ["compact", "regular", "airy"] },
+    "sections": {
+      "type": "array",
+      "description": "Every section id from the provided catalog, in reading order, each with its display title.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -6,7 +6,7 @@ import { extractSourceText } from "@/lib/source";
 import { ExtractionError, resolveEngine, runExtraction } from "@/lib/engine";
 import { NOT_FOUND_SENTINEL } from "@/lib/render";
 import { getStorage } from "@/lib/storage";
-import { apiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
+import { apiSpendTodayUsd, buildApiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Engine error" }, { status: 400 });
   }
   if (choice.engine !== "cli") {
-    const spent = apiSpendTodayUsd(await storage.listRuns());
+    const spent = apiSpendTodayUsd(await storage.listRuns()) + buildApiSpendTodayUsd(await storage.listBuilds());
     const cap = dailyCapUsd();
     if (spent >= cap) {
       return NextResponse.json(

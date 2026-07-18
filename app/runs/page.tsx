@@ -16,7 +16,7 @@ export default async function RunsPage() {
 
       {runs.length === 0 ? (
         <p className="mt-8 rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
-          No runs yet. <Link href="/" className="text-[#1F3A5F] underline">Start one</Link>.
+          No runs yet. <Link href="/runs/new" className="text-[#1F3A5F] underline">Start one</Link>.
         </p>
       ) : (
         <div className="mt-6 overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">

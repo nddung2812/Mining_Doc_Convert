@@ -13,7 +13,11 @@
 }
 
 body {
-  background: var(--background);
+  background:
+    radial-gradient(1100px 550px at 10% -10%, rgba(31, 58, 95, 0.07), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(31, 58, 95, 0.04), transparent 55%),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  background-attachment: fixed;
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }

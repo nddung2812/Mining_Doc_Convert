@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE, authEnabled, isValidSession } from "@/lib/auth";
 
-export async function middleware(request: NextRequest) {
+// Next 16: the `middleware` convention is deprecated and renamed `proxy`.
+export async function proxy(request: NextRequest) {
   if (!authEnabled()) return NextResponse.next();
 
   const { pathname } = request.nextUrl;

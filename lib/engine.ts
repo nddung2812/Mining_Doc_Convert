@@ -117,7 +117,7 @@ async function extractViaApi(
 let gatewayPricingCache: { at: number; byId: Map<string, { input: number; output: number; cacheRead: number }> } | null =
   null;
 
-async function gatewayCostUsd(
+export async function gatewayCostUsd(
   apiKey: string,
   model: string,
   usage: NonNullable<EngineOutput["usage"]>,
