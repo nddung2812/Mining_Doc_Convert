@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { ClientRecord } from "@/lib/types";
 
 const DOC_TYPES = [
   { value: "sop", label: "Standard Operating Procedure (SOP)" },
@@ -13,10 +14,20 @@ const DOC_TYPES = [
 export default function NewRunPage() {
   const router = useRouter();
   const [clientName, setClientName] = useState("");
+  const [clients, setClients] = useState<ClientRecord[]>([]);
   const [docType, setDocType] = useState("sop");
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void fetch("/api/clients")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list) => setClients(list as ClientRecord[]))
+      .catch(() => {});
+  }, []);
+
+  const matchedClient = clients.find((c) => c.name.toLowerCase() === clientName.trim().toLowerCase());
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -27,6 +38,7 @@ export default function NewRunPage() {
     const form = new FormData();
     form.set("file", file);
     form.set("clientName", clientName);
+    if (matchedClient) form.set("clientId", matchedClient.id);
     form.set("docType", docType);
 
     const headers: Record<string, string> = {};
@@ -60,11 +72,24 @@ export default function NewRunPage() {
           <label className="block text-sm font-medium">Client</label>
           <input
             required
+            list="client-list"
             value={clientName}
             onChange={(e) => setClientName(e.target.value)}
             placeholder="e.g. Example Mining Co"
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-[#1F3A5F] focus:outline-none"
           />
+          <datalist id="client-list">
+            {clients.map((c) => (
+              <option key={c.id} value={c.name} />
+            ))}
+          </datalist>
+          <p className="mt-1 text-xs text-slate-500">
+            {matchedClient
+              ? matchedClient.templates[docType as keyof typeof matchedClient.templates]
+                ? `Registered client — their custom ${docType.toUpperCase()} template will be used.`
+                : `Registered client — no custom ${docType.toUpperCase()} template yet, master will be used.`
+              : "Unregistered name — master template. Register clients (and their branded templates) on the Clients page."}
+          </p>
         </div>
 
         <div>

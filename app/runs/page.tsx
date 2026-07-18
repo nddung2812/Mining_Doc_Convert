@@ -44,13 +44,15 @@ export default async function RunsPage() {
                   <td className="px-4 py-3">{DOC_TYPE_NAMES[run.docType]}</td>
                   <td className="px-4 py-3">
                     {run.status === "complete" ? (
-                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">complete</span>
+                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800">approved</span>
+                    ) : run.status === "awaiting_review" ? (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">awaiting review</span>
                     ) : (
                       <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">failed</span>
                     )}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-600">
-                    {run.status === "complete"
+                    {run.status !== "failed"
                       ? `${run.confidenceSummary.low} low-conf · ${run.confidenceSummary.notFound} missing · ${run.confidenceSummary.warnings} warnings`
                       : "—"}
                   </td>

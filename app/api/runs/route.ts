@@ -4,7 +4,7 @@ import { isDocType, type RunRecord } from "@/lib/types";
 import { getDocTypeAssets } from "@/lib/doctypes";
 import { extractSourceText } from "@/lib/source";
 import { ExtractionError, resolveEngine, runExtraction, DEFAULT_MODEL } from "@/lib/engine";
-import { renderDocx, NOT_FOUND_SENTINEL } from "@/lib/render";
+import { NOT_FOUND_SENTINEL } from "@/lib/render";
 import { getStorage } from "@/lib/storage";
 import { apiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
 
@@ -37,13 +37,23 @@ export async function POST(request: NextRequest) {
   }
 
   const file = form.get("file");
-  const clientName = String(form.get("clientName") ?? "").trim();
+  let clientName = String(form.get("clientName") ?? "").trim();
+  const clientIdRaw = String(form.get("clientId") ?? "").trim();
   const docTypeRaw = String(form.get("docType") ?? "");
 
   if (!(file instanceof File)) return NextResponse.json({ error: "Missing source file" }, { status: 400 });
-  if (!clientName) return NextResponse.json({ error: "Missing client name" }, { status: 400 });
   if (!isDocType(docTypeRaw)) return NextResponse.json({ error: "Invalid doc type" }, { status: 400 });
   const docType = docTypeRaw;
+
+  // A registered client links the run to their custom templates.
+  let clientId: string | null = null;
+  if (clientIdRaw) {
+    const client = await storage.getClient(clientIdRaw);
+    if (!client) return NextResponse.json({ error: "Unknown client" }, { status: 400 });
+    clientId = client.id;
+    clientName = client.name;
+  }
+  if (!clientName) return NextResponse.json({ error: "Missing client name" }, { status: 400 });
 
   // Cost guardrail: block new API-engine runs once today's spend hits the cap.
   const requestApiKey = request.headers.get("x-anthropic-key");
@@ -80,6 +90,8 @@ export async function POST(request: NextRequest) {
     id,
     createdAt,
     status: "failed",
+    approval: null,
+    clientId,
     clientName,
     docType,
     source: {
@@ -105,13 +117,13 @@ export async function POST(request: NextRequest) {
 
   try {
     const output = await runExtraction(docType, clientName, sourceText, choice);
-    const docx = renderDocx(docType, output.extracted, createdAt);
-    await storage.saveFile(id, "output.docx", docx);
 
+    // Approval gate: extraction is done, but rendering waits for a named
+    // reviewer to approve the extracted content (POST /api/runs/[id]/approve).
     const levels = output.extracted.meta.field_confidence;
     const run: RunRecord = {
       ...base,
-      status: "complete",
+      status: "awaiting_review",
       engine: output.engine,
       model: output.model,
       usage: output.usage,

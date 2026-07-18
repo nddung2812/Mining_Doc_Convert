@@ -13,10 +13,22 @@ export interface ExtractionResult {
   meta: ExtractionMeta;
 }
 
+export interface ClientRecord {
+  id: string;
+  name: string;
+  createdAt: string;
+  /** Per-doc-type custom templates; absent doc types fall back to the master template. */
+  templates: Partial<Record<DocType, { filename: string; uploadedAt: string }>>;
+}
+
 export interface RunRecord {
   id: string;
   createdAt: string;
-  status: "complete" | "failed";
+  /** awaiting_review: extracted, render gated on human approval. complete: approved + rendered. */
+  status: "awaiting_review" | "complete" | "failed";
+  approval: { approvedBy: string; at: string } | null;
+  /** Set when the run is tied to a registered client (enables their custom template). */
+  clientId: string | null;
   clientName: string;
   docType: DocType;
   source: { filename: string; bytes: number; sha256: string };

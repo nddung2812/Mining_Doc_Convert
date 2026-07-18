@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getStorage } from "@/lib/storage";
 import { DOC_TYPE_NAMES } from "@/lib/types";
+import ApproveForm from "./approve-form";
 
 export const dynamic = "force-dynamic";
 
@@ -56,6 +57,15 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         )}
       </div>
 
+      {run.status === "complete" && run.approval && (
+        <p className="rounded-md bg-green-50 px-3 py-2 text-sm text-green-800">
+          Approved by <span className="font-semibold">{run.approval.approvedBy}</span> on{" "}
+          {new Date(run.approval.at).toLocaleString()}.
+        </p>
+      )}
+
+      {run.status === "awaiting_review" && <ApproveForm runId={run.id} />}
+
       {run.status === "failed" && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
           <p className="font-semibold">Run failed</p>
@@ -80,7 +90,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         <Chip label="Downloads" value={String(run.downloads.length)} />
       </div>
 
-      {run.status === "complete" && run.extracted && (
+      {run.status !== "failed" && run.extracted && (
         <>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             <p className="font-semibold">

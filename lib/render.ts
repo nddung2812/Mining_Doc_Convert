@@ -17,10 +17,18 @@ function markNotFound(value: unknown): unknown {
   return value;
 }
 
-/** Deterministic render: extracted JSON + versioned template -> docx buffer. No AI here. */
-export function renderDocx(docType: DocType, extracted: ExtractionResult, generatedAt: string): Buffer {
+/**
+ * Deterministic render: extracted JSON + versioned template -> docx buffer. No AI here.
+ * Pass `templateBuffer` (a validated client-specific template) to override the master.
+ */
+export function renderDocx(
+  docType: DocType,
+  extracted: ExtractionResult,
+  generatedAt: string,
+  templateBuffer?: Buffer,
+): Buffer {
   const { templatePath } = getDocTypeAssets(docType);
-  const zip = new PizZip(fs.readFileSync(templatePath));
+  const zip = new PizZip(templateBuffer ?? fs.readFileSync(templatePath));
   const doc = new Docxtemplater(zip, {
     paragraphLoop: true,
     linebreaks: true,

@@ -1,6 +1,6 @@
 # MDocConvert — Mining Doc Factory (MVP)
 
-Automated drafting of client-branded mining compliance documents (SOP, RA, HMP) from raw client
+Automated drafting of client-branded mining documents (SOP, RA, HMP, Proposal) from raw client
 source content — with a mandatory human reviewer. Styling is deterministic (docx templates),
 content is AI-extracted (one structured call per document), and a qualified person approves every
 document before it ships. The AI never touches formatting; the template never touches content.
@@ -39,6 +39,31 @@ without a key get a clear "bring your own key" error — your subscription is ne
   client-branded versions **keeping the same `{tags}`** and everything keeps working.
 
 Every run records which prompt/schema/template version produced it.
+
+## Review model (approval gate)
+
+Extraction never renders directly. A run lands in **awaiting review**; a named reviewer inspects
+the extracted JSON (confidence flags, NOT FOUND fields, warnings), then approves — which records
+their name in the audit trail and releases the deterministic render. Downloads are blocked until
+approval. This mirrors Eve's `approval` primitive so both runtimes share one review model.
+
+## Per-client templates
+
+The Clients page registers clients and accepts one branded template per doc type: restyle the
+master in Word (fonts, colours, logo, cover) keeping every `{tag}` intact, and upload. Uploads are
+dry-run rendered against dummy data on the spot — broken tags are rejected with the exact
+docxtemplater explanation. At render time the client's template wins; doc types without one fall
+back to the master, and the run's `templateVersion` records exactly which was used
+(`client:<id>@<uploadedAt>`).
+
+## Eve agent (Phase 2 shell, prepared)
+
+`agent/` holds the [Eve](https://vercel.com/eve) runtime for the same pipeline (version-pinned;
+Eve is beta): `tools/extract.ts` (the one structured call — stores the result and returns only a
+run id + review summary, so the chat model can never touch document content) and
+`tools/render.ts` (approval-gated via `always()`, shares run storage with the web app).
+Per the build plan, the Eve deployment activates after the Phase 1 golden test; this app remains
+the permanently working fallback engine.
 
 ## Local development
 
