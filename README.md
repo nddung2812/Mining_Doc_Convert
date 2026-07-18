@@ -19,15 +19,24 @@ extraction engine ──► schema-validated JSON (confidence flags, NOT_FOUND m
 audit record (source hash, prompt/schema/template versions, model, tokens, cost, downloads)
 ```
 
-Two swappable extraction engines:
+Three swappable extraction engines:
 
 | Engine | When | Billing |
 |---|---|---|
 | `cli` — Claude Code CLI (`claude -p`) | Local dev only, no API key configured | Covered by your Claude subscription |
-| `api` — Anthropic API | Deployed, or whenever a key is present | Server key (`ANTHROPIC_API_KEY`) or **bring-your-own key** entered per-user in Settings |
+| `api` — Anthropic API | Claude models, whenever an Anthropic key is present | Server key (`ANTHROPIC_API_KEY`) or **bring-your-own key** entered per-user in Settings |
+| `gateway` — Vercel AI Gateway | Any `vendor/model` picked in the model picker (OpenAI, Google, xAI, Anthropic, …) | **Bring-your-own AI Gateway key** in Settings (or `AI_GATEWAY_API_KEY`) — one key, every vendor |
 
-Resolution order: per-request BYOK key → `ANTHROPIC_API_KEY` → CLI (local only). Deployed users
-without a key get a clear "bring your own key" error — your subscription is never exposed.
+Resolution order: a `vendor/model` id always routes through the gateway; bare Claude ids resolve
+per-request BYOK Anthropic key → `ANTHROPIC_API_KEY` → CLI (local only). Deployed users without a
+key get a clear "bring your own key" error — your subscription is never exposed.
+
+**Model selection across vendors** is one grouped dropdown on the New run page: the default Claude
+entry plus, when a gateway key is saved in Settings, the gateway's live model catalog grouped by
+vendor (`/api/models`). Gateway run costs are computed from the catalog's live per-token pricing
+and count toward the daily cap alongside `api` runs. Quality note: the NOT_FOUND-over-guessing
+behaviour was validated on Claude — every model passes the same ajv schema gate and human review,
+but re-run the golden test before trusting another vendor's model in production.
 
 ## Plain-file contracts (deliberately not code)
 
@@ -90,6 +99,8 @@ npm run test:render  # render all three with dummy data → data/test-output/
    - `DAILY_COST_CAP_USD` — daily API spend cap (default 10).
    - `ANTHROPIC_API_KEY` — optional; leave unset to force every user to bring their own key
      (Settings page), which is the intended multi-user model.
+   - `AI_GATEWAY_API_KEY` — optional; same story for multi-vendor models via the AI Gateway.
+     Leave unset so users bring their own gateway key.
 3. Attach a **Vercel Blob** store to the project (Storage tab). `BLOB_READ_WRITE_TOKEN` is injected
    automatically and the app switches from filesystem to Blob storage.
 

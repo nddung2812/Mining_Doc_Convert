@@ -11,6 +11,7 @@ const PRICING: { prefix: string; input: number; output: number; cacheWrite: numb
 
 export function estimateCostUsd(output: EngineOutput): number | null {
   if (output.engine === "cli") return output.reportedCostUsd; // informational; covered by subscription
+  if (output.engine === "gateway") return output.reportedCostUsd; // computed from the gateway's live pricing catalog
   if (!output.usage) return null;
   const p = PRICING.find((row) => output.model.startsWith(row.prefix)) ?? PRICING[1];
   const { inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens } = output.usage;
@@ -28,10 +29,10 @@ export function dailyCapUsd(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 10;
 }
 
-/** API-engine spend today (UTC). CLI runs are subscription-covered and excluded. */
+/** API + gateway spend today (UTC). CLI runs are subscription-covered and excluded. */
 export function apiSpendTodayUsd(runs: RunRecord[]): number {
   const today = new Date().toISOString().slice(0, 10);
   return runs
-    .filter((r) => r.engine === "api" && r.createdAt.slice(0, 10) === today)
+    .filter((r) => (r.engine === "api" || r.engine === "gateway") && r.createdAt.slice(0, 10) === today)
     .reduce((sum, r) => sum + (r.costUsd ?? 0), 0);
 }

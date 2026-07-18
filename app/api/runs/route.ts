@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isDocType, type RunRecord } from "@/lib/types";
 import { getDocTypeAssets } from "@/lib/doctypes";
 import { extractSourceText } from "@/lib/source";
-import { ExtractionError, resolveEngine, runExtraction, DEFAULT_MODEL } from "@/lib/engine";
+import { ExtractionError, resolveEngine, runExtraction } from "@/lib/engine";
 import { NOT_FOUND_SENTINEL } from "@/lib/render";
 import { getStorage } from "@/lib/storage";
 import { apiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
@@ -55,15 +55,18 @@ export async function POST(request: NextRequest) {
   }
   if (!clientName) return NextResponse.json({ error: "Missing client name" }, { status: 400 });
 
-  // Cost guardrail: block new API-engine runs once today's spend hits the cap.
-  const requestApiKey = request.headers.get("x-anthropic-key");
+  // Cost guardrail: block new paid-engine runs once today's spend hits the cap.
   let choice;
   try {
-    choice = resolveEngine(requestApiKey);
+    choice = resolveEngine({
+      anthropicKey: request.headers.get("x-anthropic-key"),
+      gatewayKey: request.headers.get("x-gateway-key"),
+      model: String(form.get("model") ?? ""),
+    });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Engine error" }, { status: 400 });
   }
-  if (choice.engine === "api") {
+  if (choice.engine !== "cli") {
     const spent = apiSpendTodayUsd(await storage.listRuns());
     const cap = dailyCapUsd();
     if (spent >= cap) {
@@ -103,7 +106,7 @@ export async function POST(request: NextRequest) {
     schemaVersion: assets.schemaVersion,
     templateVersion: assets.templateVersion,
     engine: choice.engine,
-    model: DEFAULT_MODEL,
+    model: choice.model,
     usage: null,
     costUsd: null,
     extracted: null,

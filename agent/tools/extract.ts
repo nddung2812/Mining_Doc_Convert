@@ -30,7 +30,12 @@ export default defineTool({
   }),
   async execute({ docType, clientName, sourceText }) {
     const assets = getDocTypeAssets(docType);
-    const output = await runExtraction(docType, clientName, sourceText, resolveEngine(null));
+    const output = await runExtraction(
+      docType,
+      clientName,
+      sourceText,
+      resolveEngine({ anthropicKey: null, gatewayKey: null }),
+    );
 
     const id = randomUUID();
     const levels = output.extracted.meta.field_confidence;

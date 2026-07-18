@@ -11,6 +11,14 @@ const DOC_TYPES = [
   { value: "proposal", label: "Client Proposal" },
 ];
 
+const DEFAULT_MODEL_OPTION = ""; // empty -> server default (Anthropic direct / local CLI)
+
+interface GatewayModelOption {
+  id: string;
+  name: string;
+  vendor: string;
+}
+
 export default function NewRunPage() {
   const router = useRouter();
   const [clientName, setClientName] = useState("");
@@ -19,13 +27,31 @@ export default function NewRunPage() {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gatewayModels, setGatewayModels] = useState<GatewayModelOption[]>([]);
+  const [model, setModel] = useState(() =>
+    typeof window === "undefined" ? DEFAULT_MODEL_OPTION : (localStorage.getItem("preferred_model") ?? DEFAULT_MODEL_OPTION),
+  );
 
   useEffect(() => {
     void fetch("/api/clients")
       .then((r) => (r.ok ? r.json() : []))
       .then((list) => setClients(list as ClientRecord[]))
       .catch(() => {});
+    const gatewayKey = localStorage.getItem("ai_gateway_key");
+    const headers: Record<string, string> = gatewayKey ? { "x-gateway-key": gatewayKey } : {};
+    void fetch("/api/models", { headers })
+      .then((r) => (r.ok ? r.json() : { models: [] }))
+      .then((body: { models: GatewayModelOption[] }) => setGatewayModels(body.models ?? []))
+      .catch(() => {});
   }, []);
+
+  const vendors = [...new Set(gatewayModels.map((m) => m.vendor))];
+
+  function selectModel(value: string) {
+    setModel(value);
+    if (value) localStorage.setItem("preferred_model", value);
+    else localStorage.removeItem("preferred_model");
+  }
 
   const matchedClient = clients.find((c) => c.name.toLowerCase() === clientName.trim().toLowerCase());
 
@@ -40,10 +66,13 @@ export default function NewRunPage() {
     form.set("clientName", clientName);
     if (matchedClient) form.set("clientId", matchedClient.id);
     form.set("docType", docType);
+    if (model) form.set("model", model);
 
     const headers: Record<string, string> = {};
     const key = localStorage.getItem("anthropic_api_key");
     if (key) headers["x-anthropic-key"] = key;
+    const gatewayKey = localStorage.getItem("ai_gateway_key");
+    if (gatewayKey) headers["x-gateway-key"] = gatewayKey;
 
     try {
       const res = await fetch("/api/runs", { method: "POST", body: form, headers });
@@ -103,6 +132,31 @@ export default function NewRunPage() {
               <option key={d.value} value={d.value}>{d.label}</option>
             ))}
           </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium">Model</label>
+          <select
+            value={model}
+            onChange={(e) => selectModel(e.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-[#1F3A5F] focus:outline-none"
+          >
+            <option value={DEFAULT_MODEL_OPTION}>Claude Opus 4.8 — default (Anthropic direct / local CLI)</option>
+            {vendors.map((vendor) => (
+              <optgroup key={vendor} label={`${vendor} (via AI Gateway)`}>
+                {gatewayModels
+                  .filter((m) => m.vendor === vendor)
+                  .map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+              </optgroup>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-slate-500">
+            {vendors.length > 0
+              ? "Vendor models run through your Vercel AI Gateway key. The extraction quality gate (golden test) was validated on Claude — re-validate before trusting another model in production."
+              : "Add a Vercel AI Gateway key in Settings to unlock other vendors' models (OpenAI, Google, xAI, …)."}
+          </p>
         </div>
 
         <div>

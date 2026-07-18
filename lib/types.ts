@@ -1,6 +1,6 @@
 export type DocType = "sop" | "ra" | "hmp" | "proposal";
 
-export type EngineId = "api" | "cli";
+export type EngineId = "api" | "cli" | "gateway";
 
 export interface ExtractionMeta {
   field_confidence: { field: string; level: "high" | "medium" | "low"; note: string }[];

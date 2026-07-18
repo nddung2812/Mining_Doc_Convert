@@ -1,9 +1,16 @@
 import { spawn } from "child_process";
 import Anthropic from "@anthropic-ai/sdk";
+import { generateObject, jsonSchema } from "ai";
+import { createGateway } from "@ai-sdk/gateway";
 import type { DocType, EngineId, ExtractionResult } from "./types";
 import { getDocTypeAssets } from "./doctypes";
 
 export const DEFAULT_MODEL = process.env.CLAUDE_MODEL || "claude-opus-4-8";
+
+/** Gateway model ids are "vendor/model" (e.g. "openai/gpt-5.2"); bare ids are Anthropic-direct. */
+export function isGatewayModel(model: string): boolean {
+  return model.includes("/");
+}
 
 export interface EngineOutput {
   extracted: ExtractionResult;
@@ -62,12 +69,13 @@ async function extractViaApi(
   clientName: string,
   sourceText: string,
   apiKey: string,
+  model: string,
 ): Promise<EngineOutput> {
   const assets = getDocTypeAssets(docType);
   const client = new Anthropic({ apiKey });
 
   const stream = client.messages.stream({
-    model: DEFAULT_MODEL,
+    model,
     max_tokens: 32000,
     thinking: { type: "adaptive" },
     system: assets.promptText,
@@ -104,6 +112,90 @@ async function extractViaApi(
   };
 }
 
+// Gateway model catalog pricing (USD per token), cached so cost estimation
+// doesn't add a round-trip to every run. Pricing is public catalog data.
+let gatewayPricingCache: { at: number; byId: Map<string, { input: number; output: number; cacheRead: number }> } | null =
+  null;
+
+async function gatewayCostUsd(
+  apiKey: string,
+  model: string,
+  usage: NonNullable<EngineOutput["usage"]>,
+): Promise<number | null> {
+  try {
+    if (!gatewayPricingCache || Date.now() - gatewayPricingCache.at > 3_600_000) {
+      const catalog = await createGateway({ apiKey }).getAvailableModels();
+      const byId = new Map<string, { input: number; output: number; cacheRead: number }>();
+      for (const entry of catalog.models) {
+        if (!entry.pricing) continue;
+        byId.set(entry.id, {
+          input: Number(entry.pricing.input),
+          output: Number(entry.pricing.output),
+          cacheRead: Number(entry.pricing.cachedInputTokens ?? entry.pricing.input),
+        });
+      }
+      gatewayPricingCache = { at: Date.now(), byId };
+    }
+    const p = gatewayPricingCache.byId.get(model);
+    if (!p) return null;
+    return (
+      usage.inputTokens * p.input +
+      usage.outputTokens * p.output +
+      usage.cacheCreationInputTokens * p.input +
+      usage.cacheReadInputTokens * p.cacheRead
+    );
+  } catch {
+    return null; // cost estimation must never fail a run
+  }
+}
+
+/**
+ * Multi-vendor engine via Vercel AI Gateway: one key, any catalog model
+ * ("openai/…", "google/…", "anthropic/…", "xai/…"). The AI SDK maps our JSON
+ * schema onto each vendor's structured-output mechanism; ajv re-validates the
+ * result afterwards regardless, so the schema gate holds for every vendor.
+ */
+async function extractViaGateway(
+  docType: DocType,
+  clientName: string,
+  sourceText: string,
+  model: string,
+  apiKey: string,
+): Promise<EngineOutput> {
+  const assets = getDocTypeAssets(docType);
+  const gateway = createGateway({ apiKey });
+
+  let object: unknown;
+  let usage: NonNullable<EngineOutput["usage"]>;
+  try {
+    const result = await generateObject({
+      model: gateway(model),
+      schema: jsonSchema<Record<string, unknown>>(assets.schema as Record<string, unknown>),
+      system: assets.promptText,
+      prompt: buildUserContent(docType, clientName, sourceText),
+      maxOutputTokens: 32000,
+    });
+    object = result.object;
+    usage = {
+      inputTokens: result.usage.inputTokens ?? 0,
+      outputTokens: result.usage.outputTokens ?? 0,
+      cacheCreationInputTokens: result.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
+      cacheReadInputTokens: result.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+    };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new ExtractionError(`Gateway extraction with ${model} failed: ${message.slice(0, 500)}`);
+  }
+
+  return {
+    extracted: validateExtraction(docType, object),
+    engine: "gateway",
+    model,
+    usage,
+    reportedCostUsd: await gatewayCostUsd(apiKey, model, usage),
+  };
+}
+
 interface CliEnvelope {
   result?: string;
   total_cost_usd?: number;
@@ -120,7 +212,12 @@ interface CliEnvelope {
  * Local-only engine: shells out to the Claude Code CLI (`claude -p`), which is
  * covered by the operator's Max subscription. Never used on Vercel.
  */
-async function extractViaCli(docType: DocType, clientName: string, sourceText: string): Promise<EngineOutput> {
+async function extractViaCli(
+  docType: DocType,
+  clientName: string,
+  sourceText: string,
+  model: string,
+): Promise<EngineOutput> {
   const assets = getDocTypeAssets(docType);
   const prompt = [
     assets.promptText,
@@ -134,7 +231,7 @@ async function extractViaCli(docType: DocType, clientName: string, sourceText: s
   ].join("\n");
 
   const stdout = await new Promise<string>((resolve, reject) => {
-    const child = spawn("claude", ["-p", "--output-format", "json", "--model", DEFAULT_MODEL], {
+    const child = spawn("claude", ["-p", "--output-format", "json", "--model", model], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let out = "";
@@ -179,7 +276,7 @@ async function extractViaCli(docType: DocType, clientName: string, sourceText: s
   return {
     extracted: validateExtraction(docType, parseJsonLoose(envelope.result)),
     engine: "cli",
-    model: DEFAULT_MODEL,
+    model,
     usage,
     reportedCostUsd: envelope.total_cost_usd ?? null,
   };
@@ -187,29 +284,50 @@ async function extractViaCli(docType: DocType, clientName: string, sourceText: s
 
 export interface EngineChoice {
   engine: EngineId;
-  apiKey?: string;
+  apiKey?: string; // Anthropic key (api engine) or AI Gateway key (gateway engine)
+  model: string;
+}
+
+export interface EngineKeys {
+  anthropicKey: string | null;
+  gatewayKey: string | null;
+  model?: string | null;
 }
 
 /**
- * Engine resolution:
- * 1. A per-request API key (BYOK header) always wins -> api engine.
+ * Engine resolution. A "vendor/model" id always routes through the AI Gateway
+ * (per-request BYOK gateway key, or AI_GATEWAY_API_KEY). Bare Claude model ids
+ * keep the original order:
+ * 1. A per-request Anthropic key (BYOK header) always wins -> api engine.
  * 2. ANTHROPIC_API_KEY in the environment -> api engine.
  * 3. Locally (not on Vercel), fall back to the Claude Code CLI (Max subscription).
  */
-export function resolveEngine(requestApiKey: string | null): EngineChoice {
+export function resolveEngine({ anthropicKey, gatewayKey, model }: EngineKeys): EngineChoice {
+  const chosenModel = model?.trim() || DEFAULT_MODEL;
+
+  if (isGatewayModel(chosenModel)) {
+    const key = gatewayKey || process.env.AI_GATEWAY_API_KEY;
+    if (!key) {
+      throw new ExtractionError(
+        `Model ${chosenModel} runs through the Vercel AI Gateway — add your AI Gateway key in Settings (or set AI_GATEWAY_API_KEY).`,
+      );
+    }
+    return { engine: "gateway", apiKey: key, model: chosenModel };
+  }
+
   const forced = process.env.EXTRACTION_ENGINE; // "api" | "cli" | unset
-  if (requestApiKey) return { engine: "api", apiKey: requestApiKey };
+  if (anthropicKey) return { engine: "api", apiKey: anthropicKey, model: chosenModel };
   if (forced === "cli") {
     if (process.env.VERCEL) throw new ExtractionError("EXTRACTION_ENGINE=cli is not available on Vercel.");
-    return { engine: "cli" };
+    return { engine: "cli", model: chosenModel };
   }
-  if (process.env.ANTHROPIC_API_KEY) return { engine: "api", apiKey: process.env.ANTHROPIC_API_KEY };
+  if (process.env.ANTHROPIC_API_KEY) return { engine: "api", apiKey: process.env.ANTHROPIC_API_KEY, model: chosenModel };
   if (forced === "api") {
     throw new ExtractionError("EXTRACTION_ENGINE=api but no API key was provided (env or Settings).");
   }
-  if (!process.env.VERCEL) return { engine: "cli" };
+  if (!process.env.VERCEL) return { engine: "cli", model: chosenModel };
   throw new ExtractionError(
-    "No Claude API key available. Add your own key in Settings — deployed instances require a bring-your-own Anthropic API key.",
+    "No API key available. Add your own key in Settings — an Anthropic key for Claude models, or a Vercel AI Gateway key for any vendor's models.",
   );
 }
 
@@ -219,9 +337,13 @@ export async function runExtraction(
   sourceText: string,
   choice: EngineChoice,
 ): Promise<EngineOutput> {
+  if (choice.engine === "gateway") {
+    if (!choice.apiKey) throw new ExtractionError("Gateway engine selected but no AI Gateway key resolved.");
+    return extractViaGateway(docType, clientName, sourceText, choice.model, choice.apiKey);
+  }
   if (choice.engine === "api") {
     if (!choice.apiKey) throw new ExtractionError("API engine selected but no API key resolved.");
-    return extractViaApi(docType, clientName, sourceText, choice.apiKey);
+    return extractViaApi(docType, clientName, sourceText, choice.apiKey, choice.model);
   }
-  return extractViaCli(docType, clientName, sourceText);
+  return extractViaCli(docType, clientName, sourceText, choice.model);
 }
