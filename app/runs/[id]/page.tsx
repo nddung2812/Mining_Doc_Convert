@@ -1,16 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getStorage } from "@/lib/storage";
+import { rescueStaleRun } from "@/lib/runs";
 import { DOC_TYPE_NAMES } from "@/lib/types";
 import ApproveForm from "./approve-form";
+import ExtractedReview from "./extracted-review";
+import GeneratingPoller from "./generating-poller";
 
 export const dynamic = "force-dynamic";
-
-const LEVEL_STYLES: Record<string, string> = {
-  high: "bg-green-100 text-green-800",
-  medium: "bg-amber-100 text-amber-800",
-  low: "bg-red-100 text-red-800",
-};
 
 function Chip({ label, value }: { label: string; value: string }) {
   return (
@@ -21,19 +18,19 @@ function Chip({ label, value }: { label: string; value: string }) {
   );
 }
 
-function renderValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  return JSON.stringify(value, null, 2);
-}
+const ENGINE_LABELS: Record<string, string> = {
+  cli: "Claude CLI (subscription)",
+  api: "Claude API",
+  gateway: "AI Gateway",
+};
 
 export default async function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const run = await getStorage().getRun(id);
+  let run = await getStorage().getRun(id);
   if (!run) notFound();
+  run = await rescueStaleRun(run);
 
-  const confidenceByField = new Map(
-    (run.extracted?.meta.field_confidence ?? []).map((f) => [f.field.replace(/^document\./, ""), f]),
-  );
+  const amendments = run.amendments ?? [];
 
   return (
     <div className="space-y-6">
@@ -57,14 +54,22 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         )}
       </div>
 
+      {run.status === "generating" && (
+        <GeneratingPoller runId={run.id} startedAt={run.generationStartedAt ?? run.createdAt} />
+      )}
+
       {run.status === "complete" && run.approval && (
         <p className="rounded-md border-l-4 border-emerald-600 bg-white px-3 py-2 text-sm text-emerald-900 shadow-sm">
           Approved by <span className="font-semibold">{run.approval.approvedBy}</span> on{" "}
-          {new Date(run.approval.at).toLocaleString()}.
+          {new Date(run.approval.at).toLocaleString()}
+          {amendments.length > 0 && (
+            <> — with {amendments.length} reviewer amendment{amendments.length === 1 ? "" : "s"}</>
+          )}
+          .
         </p>
       )}
 
-      {run.status === "awaiting_review" && <ApproveForm runId={run.id} />}
+      {run.status === "awaiting_review" && <ApproveForm runId={run.id} amendmentCount={amendments.length} />}
 
       {run.status === "failed" && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
@@ -74,7 +79,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
       )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Chip label="Engine" value={run.engine === "cli" ? "Claude CLI (subscription)" : "Claude API"} />
+        <Chip label="Engine" value={ENGINE_LABELS[run.engine] ?? run.engine} />
         <Chip label="Model" value={run.model} />
         <Chip
           label="Cost"
@@ -90,7 +95,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         <Chip label="Downloads" value={String(run.downloads.length)} />
       </div>
 
-      {run.status !== "failed" && run.extracted && (
+      {(run.status === "awaiting_review" || run.status === "complete") && run.extracted && (
         <>
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             <p className="font-semibold">
@@ -113,54 +118,32 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             </section>
           )}
 
-          <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-            <h2 className="border-b border-slate-200 px-4 py-3 text-sm font-semibold">
-              Extracted content with per-field confidence
-            </h2>
-            <div className="divide-y divide-slate-100">
-              {Object.entries(run.extracted.document).map(([field, value]) => {
-                const conf = confidenceByField.get(field);
-                const isMissing =
-                  value === "NOT_FOUND" || (Array.isArray(value) && value.length === 0);
-                return (
-                  <div key={field} className="grid gap-2 px-4 py-3 sm:grid-cols-[180px_90px_1fr]">
-                    <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                      {field.replaceAll("_", " ")}
-                    </div>
-                    <div>
-                      {conf ? (
-                        <span
-                          title={conf.note || undefined}
-                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${LEVEL_STYLES[conf.level] ?? "bg-slate-100"}`}
-                        >
-                          {conf.level}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-slate-400">—</span>
-                      )}
-                    </div>
-                    <div className="min-w-0 text-sm">
-                      {isMissing ? (
-                        <span className="font-semibold text-red-700">
-                          {Array.isArray(value) ? "NONE FOUND IN SOURCE" : "NOT FOUND — REVIEW REQUIRED"}
-                        </span>
-                      ) : typeof value === "string" ? (
-                        <p className="whitespace-pre-wrap">{value}</p>
-                      ) : (
-                        <pre className="overflow-x-auto rounded-md bg-slate-50 p-2 text-xs">{renderValue(value)}</pre>
-                      )}
-                      {conf?.note && <p className="mt-1 text-xs italic text-slate-500">{conf.note}</p>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
+          <ExtractedReview
+            runId={run.id}
+            editable={run.status === "awaiting_review"}
+            document={run.extracted.document}
+            fieldConfidence={run.extracted.meta.field_confidence}
+            amendedFields={amendments.map((a) => a.field)}
+          />
+
+          {amendments.length > 0 && (
+            <section className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
+              <h2 className="font-semibold">Reviewer amendments (audit trail)</h2>
+              <ul className="mt-2 space-y-1 text-xs text-slate-600">
+                {amendments.map((a, i) => (
+                  <li key={i}>
+                    <span className="font-medium">{a.field.replaceAll("_", " ")}</span> amended{" "}
+                    {new Date(a.at).toLocaleString()} — original value kept in the audit record.
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
           <details className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm">
             <summary className="cursor-pointer font-medium">Raw extracted JSON (audit record)</summary>
             <pre className="mt-3 overflow-x-auto rounded-md bg-slate-50 p-3 text-xs">
-              {JSON.stringify(run.extracted, null, 2)}
+              {JSON.stringify({ extracted: run.extracted, amendments }, null, 2)}
             </pre>
           </details>
         </>

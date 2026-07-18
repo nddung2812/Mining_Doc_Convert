@@ -1,6 +1,6 @@
 {
   "$id": "sop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Standard Operating Procedure extraction schema",
   "type": "object",
   "additionalProperties": false,
@@ -117,7 +117,8 @@
             "properties": {
               "field": { "type": "string" },
               "level": { "type": "string", "enum": ["high", "medium", "low"] },
-              "note": { "type": "string", "description": "Why confidence is below high. Empty string when high." }
+              "note": { "type": "string", "description": "Why confidence is below high. Empty string when high." },
+              "quote": { "type": "string", "description": "Short verbatim snippet (max ~30 words) from the source that best evidences this value. Empty string when nothing applies (e.g. NOT_FOUND)." }
             }
           }
         },

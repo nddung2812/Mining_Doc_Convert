@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-export default function ApproveForm({ runId }: { runId: string }) {
+export default function ApproveForm({ runId, amendmentCount = 0 }: { runId: string; amendmentCount?: number }) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -32,9 +32,16 @@ export default function ApproveForm({ runId }: { runId: string }) {
     <form onSubmit={approve} className="rounded-lg border border-[#1F3A5F] bg-white p-4 shadow-sm">
       <p className="text-sm font-semibold text-[#1F3A5F]">Approval gate</p>
       <p className="mt-1 text-sm text-slate-600">
-        Review the extracted content above — especially every NOT FOUND, low-confidence field, and warning. Approving
-        releases the render and records your name in the audit trail as the reviewer.
+        Review the extracted content below — especially every NOT FOUND, low-confidence field, and warning. You can
+        amend any field in place before approving. Approving releases the render and records your name in the audit
+        trail as the reviewer.
       </p>
+      {amendmentCount > 0 && (
+        <p className="mt-1 text-sm font-medium text-[#1F3A5F]">
+          {amendmentCount} field{amendmentCount === 1 ? "" : "s"} amended — the corrections and the model&apos;s
+          originals are both in the audit trail.
+        </p>
+      )}
       <div className="mt-3 flex flex-wrap gap-3">
         <input
           required

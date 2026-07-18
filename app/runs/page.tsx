@@ -1,11 +1,11 @@
 import Link from "next/link";
-import { getStorage } from "@/lib/storage";
+import { listRunsRescued } from "@/lib/runs";
 import { DOC_TYPE_NAMES } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export default async function RunsPage() {
-  const runs = await getStorage().listRuns();
+  const runs = await listRunsRescued();
 
   return (
     <div>
@@ -48,12 +48,14 @@ export default async function RunsPage() {
                       <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-xs font-medium text-white">approved</span>
                     ) : run.status === "awaiting_review" ? (
                       <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">awaiting review</span>
+                    ) : run.status === "generating" ? (
+                      <span className="rounded-full bg-[#1F3A5F]/10 px-2 py-0.5 text-xs font-medium text-[#1F3A5F]">extracting…</span>
                     ) : (
                       <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">failed</span>
                     )}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-600">
-                    {run.status !== "failed"
+                    {run.status === "awaiting_review" || run.status === "complete"
                       ? `${run.confidenceSummary.low} low-conf · ${run.confidenceSummary.notFound} missing · ${run.confidenceSummary.warnings} warnings`
                       : "—"}
                   </td>

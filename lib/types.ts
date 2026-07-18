@@ -3,7 +3,13 @@ export type DocType = "sop" | "ra" | "hmp" | "proposal";
 export type EngineId = "api" | "cli" | "gateway";
 
 export interface ExtractionMeta {
-  field_confidence: { field: string; level: "high" | "medium" | "low"; note: string }[];
+  field_confidence: {
+    field: string;
+    level: "high" | "medium" | "low";
+    note: string;
+    /** Short verbatim source snippet evidencing the value — provenance for the reviewer. */
+    quote?: string;
+  }[];
   not_found: string[];
   warnings: string[];
 }
@@ -21,12 +27,30 @@ export interface ClientRecord {
   templates: Partial<Record<DocType, { filename: string; uploadedAt: string }>>;
 }
 
+/** A reviewer's pre-approval correction to one extracted field (audit trail). */
+export interface RunAmendment {
+  field: string;
+  at: string;
+  /** The model's original value, kept for the audit record. */
+  previous: unknown;
+}
+
 export interface RunRecord {
   id: string;
   createdAt: string;
-  /** awaiting_review: extracted, render gated on human approval. complete: approved + rendered. */
-  status: "awaiting_review" | "complete" | "failed";
+  /**
+   * generating: extraction runs in the background after the create response.
+   * awaiting_review: extracted, render gated on human approval.
+   * complete: approved + rendered.
+   */
+  status: "generating" | "awaiting_review" | "complete" | "failed";
+  /** Set while extraction runs in the background; null otherwise. */
+  generationStartedAt?: string | null;
+  /** Heartbeat for stale-run rescue; bumped on every state change. */
+  updatedAt?: string;
   approval: { approvedBy: string; at: string } | null;
+  /** Reviewer corrections applied before approval, newest last. */
+  amendments?: RunAmendment[];
   /** Set when the run is tied to a registered client (enables their custom template). */
   clientId: string | null;
   clientName: string;

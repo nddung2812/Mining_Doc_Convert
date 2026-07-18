@@ -6,7 +6,8 @@ import { resolveEngine } from "@/lib/engine";
 import { runTemplateDesign } from "@/lib/template-engine";
 import { buildSpendUsd, designInputFromBuild, expectedRoundMs, rescueStaleBuild, sanitizeFilename } from "@/lib/builds";
 import { parseLogo } from "@/lib/template-compile";
-import { apiSpendTodayUsd, buildApiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
+import { estimateCostUsd } from "@/lib/cost";
+import { capReachedMessage, dailyCapStatus, recordSpend } from "@/lib/ledger";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -109,14 +110,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: e instanceof Error ? e.message : "Engine error" }, { status: 400 });
   }
   if (choice.engine !== "cli") {
-    const spent = apiSpendTodayUsd(await storage.listRuns()) + buildApiSpendTodayUsd(await storage.listBuilds());
-    const cap = dailyCapUsd();
-    if (spent >= cap) {
-      return NextResponse.json(
-        { error: `Daily API spend cap reached (US$${spent.toFixed(2)} of US$${cap.toFixed(2)}). Try again tomorrow or raise DAILY_COST_CAP_USD.` },
-        { status: 429 },
-      );
-    }
+    const cap = await dailyCapStatus();
+    if (cap.overCap) return NextResponse.json({ error: capReachedMessage(cap) }, { status: 429 });
   }
 
   const buildId = randomUUID();
@@ -168,6 +163,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const started = Date.now();
     try {
       const output = await runTemplateDesign(await designInputFromBuild(build), choice);
+      const costUsd = estimateCostUsd(output);
+      await recordSpend(output.engine, costUsd);
       build.status = "review";
       build.model = output.model;
       build.iterations.push({
@@ -178,7 +175,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         engine: output.engine,
         model: output.model,
         usage: output.usage,
-        costUsd: estimateCostUsd(output),
+        costUsd,
         feedback: null,
         reviewedAt: null,
       });

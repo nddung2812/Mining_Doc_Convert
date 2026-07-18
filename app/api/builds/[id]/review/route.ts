@@ -4,7 +4,8 @@ import { getStorage } from "@/lib/storage";
 import { resolveEngine } from "@/lib/engine";
 import { runTemplateDesign } from "@/lib/template-engine";
 import { designInputFromBuild, latestSpec, parseFeedback, reviewRoundsUsed } from "@/lib/builds";
-import { apiSpendTodayUsd, buildApiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
+import { estimateCostUsd } from "@/lib/cost";
+import { capReachedMessage, dailyCapStatus, recordSpend } from "@/lib/ledger";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -50,14 +51,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: e instanceof Error ? e.message : "Engine error" }, { status: 400 });
   }
   if (choice.engine !== "cli") {
-    const spent = apiSpendTodayUsd(await storage.listRuns()) + buildApiSpendTodayUsd(await storage.listBuilds());
-    const cap = dailyCapUsd();
-    if (spent >= cap) {
-      return NextResponse.json(
-        { error: `Daily API spend cap reached (US$${spent.toFixed(2)} of US$${cap.toFixed(2)}). Try again tomorrow or raise DAILY_COST_CAP_USD.` },
-        { status: 429 },
-      );
-    }
+    const cap = await dailyCapStatus();
+    if (cap.overCap) return NextResponse.json({ error: capReachedMessage(cap) }, { status: 429 });
   }
 
   const previousSpec = latestSpec(build)!;
@@ -75,6 +70,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const started = Date.now();
     try {
       const output = await runTemplateDesign(await designInputFromBuild(build, { previousSpec, feedback }), choice);
+      const costUsd = estimateCostUsd(output);
+      await recordSpend(output.engine, costUsd);
       build.iterations.push({
         version: reviewed.version + 1,
         createdAt: new Date().toISOString(),
@@ -83,7 +80,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         engine: output.engine,
         model: output.model,
         usage: output.usage,
-        costUsd: estimateCostUsd(output),
+        costUsd,
         feedback: null,
         reviewedAt: null,
       });

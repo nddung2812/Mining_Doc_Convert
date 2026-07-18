@@ -1,6 +1,7 @@
 import { isDocType } from "@/lib/types";
 import { reviseBlock } from "@/lib/revise";
-import { ExtractionError } from "@/lib/engine";
+import { ExtractionError, resolveEngine } from "@/lib/engine";
+import { capReachedMessage, dailyCapStatus, recordSpend } from "@/lib/ledger";
 import type { EditorBlock } from "@/lib/blocks";
 
 export const runtime = "nodejs";
@@ -24,9 +25,22 @@ export async function POST(
     model: req.headers.get("x-model"),
   };
 
+  // Same daily-cap guardrail as runs and template builds.
+  let paidEngine: boolean;
+  try {
+    paidEngine = resolveEngine(keys).engine !== "cli";
+  } catch (e) {
+    return Response.json({ error: e instanceof Error ? e.message : "Engine error" }, { status: 400 });
+  }
+  if (paidEngine) {
+    const cap = await dailyCapStatus();
+    if (cap.overCap) return Response.json({ error: capReachedMessage(cap) }, { status: 429 });
+  }
+
   try {
     const revised = await reviseBlock(body.block, body.instruction.trim(), keys);
-    return Response.json({ block: revised });
+    await recordSpend(revised.engine, revised.costUsd);
+    return Response.json({ block: revised.block, costUsd: revised.costUsd });
   } catch (e) {
     const message = e instanceof ExtractionError || e instanceof Error ? e.message : "Revision failed";
     return Response.json({ error: message }, { status: 502 });

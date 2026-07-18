@@ -1,6 +1,6 @@
 {
   "$id": "proposal",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "Client Proposal extraction schema",
   "type": "object",
   "additionalProperties": false,
@@ -153,7 +153,8 @@
             "properties": {
               "field": { "type": "string" },
               "level": { "type": "string", "enum": ["high", "medium", "low"] },
-              "note": { "type": "string" }
+              "note": { "type": "string" },
+              "quote": { "type": "string", "description": "Short verbatim snippet (max ~30 words) from the source that best evidences this value. Empty string when nothing applies (e.g. NOT_FOUND)." }
             }
           }
         },

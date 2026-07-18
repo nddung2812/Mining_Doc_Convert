@@ -79,12 +79,22 @@ function htmlToRuns(html: unknown, base: Record<string, unknown> = {}): TextRun[
 
   const re = /<\/?([a-zA-Z0-9]+)[^>]*?(\/?)>/g;
   let last = 0;
+  let suppressed = 0; // <script>/<style> content never belongs in a document
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    pushText(text.slice(last, m.index));
+    if (suppressed === 0) pushText(text.slice(last, m.index));
     const tag = m[1].toLowerCase();
     const closing = m[0].startsWith("</");
     const selfClosing = m[2] === "/";
+    if (tag === "script" || tag === "style") {
+      suppressed = Math.max(0, suppressed + (closing ? -1 : 1));
+      last = re.lastIndex;
+      continue;
+    }
+    if (suppressed > 0) {
+      last = re.lastIndex;
+      continue;
+    }
     if (tag === "br") {
       runs.push(new TextRun({ break: 1 }));
     } else if (INLINE_TAGS.has(tag)) {
@@ -97,7 +107,7 @@ function htmlToRuns(html: unknown, base: Record<string, unknown> = {}): TextRun[
     }
     last = re.lastIndex;
   }
-  pushText(text.slice(last));
+  if (suppressed === 0) pushText(text.slice(last));
 
   if (runs.length === 0) runs.push(new TextRun({ text: "", ...base }));
   return runs;

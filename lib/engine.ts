@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 import Anthropic from "@anthropic-ai/sdk";
-import { generateObject, jsonSchema } from "ai";
+import { generateObject, generateText, jsonSchema } from "ai";
 import { createGateway } from "@ai-sdk/gateway";
 import type { DocType, EngineId, ExtractionResult } from "./types";
 import { getDocTypeAssets } from "./doctypes";
@@ -40,7 +40,7 @@ function buildUserContent(docType: DocType, clientName: string, sourceText: stri
 }
 
 /** Pull the first top-level JSON object out of possibly-noisy model text. */
-function parseJsonLoose(text: string): unknown {
+export function parseJsonLoose(text: string): unknown {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start === -1 || end === -1 || end <= start) {
@@ -208,28 +208,17 @@ interface CliEnvelope {
   is_error?: boolean;
 }
 
+export interface CliOutput {
+  resultText: string;
+  usage: EngineOutput["usage"];
+  totalCostUsd: number | null;
+}
+
 /**
- * Local-only engine: shells out to the Claude Code CLI (`claude -p`), which is
+ * Shared local-only completion: shells out to the Claude Code CLI (`claude -p`),
  * covered by the operator's Max subscription. Never used on Vercel.
  */
-async function extractViaCli(
-  docType: DocType,
-  clientName: string,
-  sourceText: string,
-  model: string,
-): Promise<EngineOutput> {
-  const assets = getDocTypeAssets(docType);
-  const prompt = [
-    assets.promptText,
-    "",
-    "## JSON Schema your output must conform to",
-    "```json",
-    JSON.stringify(assets.schema, null, 2),
-    "```",
-    "",
-    buildUserContent(docType, clientName, sourceText),
-  ].join("\n");
-
+export async function runCli(prompt: string, model: string, timeoutMs = 600_000): Promise<CliOutput> {
   const stdout = await new Promise<string>((resolve, reject) => {
     const child = spawn("claude", ["-p", "--output-format", "json", "--model", model], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -238,8 +227,8 @@ async function extractViaCli(
     let err = "";
     const timer = setTimeout(() => {
       child.kill();
-      reject(new ExtractionError("CLI engine timed out after 10 minutes."));
-    }, 600_000);
+      reject(new ExtractionError(`CLI engine timed out after ${Math.round(timeoutMs / 60_000)} minutes.`));
+    }, timeoutMs);
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) =>
@@ -264,21 +253,45 @@ async function extractViaCli(
     throw new ExtractionError(`claude CLI reported an error: ${JSON.stringify(envelope).slice(0, 500)}`);
   }
 
-  const usage = envelope.usage
-    ? {
-        inputTokens: envelope.usage.input_tokens ?? 0,
-        outputTokens: envelope.usage.output_tokens ?? 0,
-        cacheCreationInputTokens: envelope.usage.cache_creation_input_tokens ?? 0,
-        cacheReadInputTokens: envelope.usage.cache_read_input_tokens ?? 0,
-      }
-    : null;
-
   return {
-    extracted: validateExtraction(docType, parseJsonLoose(envelope.result)),
+    resultText: envelope.result,
+    usage: envelope.usage
+      ? {
+          inputTokens: envelope.usage.input_tokens ?? 0,
+          outputTokens: envelope.usage.output_tokens ?? 0,
+          cacheCreationInputTokens: envelope.usage.cache_creation_input_tokens ?? 0,
+          cacheReadInputTokens: envelope.usage.cache_read_input_tokens ?? 0,
+        }
+      : null,
+    totalCostUsd: envelope.total_cost_usd ?? null,
+  };
+}
+
+async function extractViaCli(
+  docType: DocType,
+  clientName: string,
+  sourceText: string,
+  model: string,
+): Promise<EngineOutput> {
+  const assets = getDocTypeAssets(docType);
+  const prompt = [
+    assets.promptText,
+    "",
+    "## JSON Schema your output must conform to",
+    "```json",
+    JSON.stringify(assets.schema, null, 2),
+    "```",
+    "",
+    buildUserContent(docType, clientName, sourceText),
+  ].join("\n");
+
+  const cli = await runCli(prompt, model);
+  return {
+    extracted: validateExtraction(docType, parseJsonLoose(cli.resultText)),
     engine: "cli",
     model,
-    usage,
-    reportedCostUsd: envelope.total_cost_usd ?? null,
+    usage: cli.usage,
+    reportedCostUsd: cli.totalCostUsd,
   };
 }
 
@@ -346,4 +359,83 @@ export async function runExtraction(
     return extractViaApi(docType, clientName, sourceText, choice.apiKey, choice.model);
   }
   return extractViaCli(docType, clientName, sourceText, choice.model);
+}
+
+export interface CompletionOutput {
+  text: string;
+  engine: EngineId;
+  model: string;
+  usage: EngineOutput["usage"];
+  /** CLI reports its own cost; gateway costs come from catalog pricing; api is estimated from usage. */
+  reportedCostUsd: number | null;
+}
+
+/**
+ * Shared plain-text completion over the same three engines — for the smaller
+ * AI features (block revise, future rewrites) that don't need the extraction
+ * pipeline's structured output. Keeps provider plumbing in one place.
+ */
+export async function completeText(
+  system: string,
+  user: string,
+  choice: EngineChoice,
+  maxOutputTokens = 4000,
+): Promise<CompletionOutput> {
+  if (choice.engine === "gateway") {
+    if (!choice.apiKey) throw new ExtractionError("Gateway engine selected but no AI Gateway key resolved.");
+    const gateway = createGateway({ apiKey: choice.apiKey });
+    const result = await generateText({
+      model: gateway(choice.model),
+      system,
+      prompt: user,
+      maxOutputTokens,
+    });
+    const usage = {
+      inputTokens: result.usage.inputTokens ?? 0,
+      outputTokens: result.usage.outputTokens ?? 0,
+      cacheCreationInputTokens: result.usage.inputTokenDetails?.cacheWriteTokens ?? 0,
+      cacheReadInputTokens: result.usage.inputTokenDetails?.cacheReadTokens ?? 0,
+    };
+    return {
+      text: result.text,
+      engine: "gateway",
+      model: choice.model,
+      usage,
+      reportedCostUsd: await gatewayCostUsd(choice.apiKey, choice.model, usage),
+    };
+  }
+
+  if (choice.engine === "api") {
+    if (!choice.apiKey) throw new ExtractionError("API engine selected but no API key resolved.");
+    const client = new Anthropic({ apiKey: choice.apiKey });
+    const res = await client.messages.create({
+      model: choice.model,
+      max_tokens: maxOutputTokens,
+      system,
+      messages: [{ role: "user", content: user }],
+    });
+    const block = res.content.find((b) => b.type === "text");
+    if (!block || block.type !== "text") throw new ExtractionError("The model returned no text.");
+    return {
+      text: block.text,
+      engine: "api",
+      model: res.model,
+      usage: {
+        inputTokens: res.usage.input_tokens,
+        outputTokens: res.usage.output_tokens,
+        cacheCreationInputTokens: res.usage.cache_creation_input_tokens ?? 0,
+        cacheReadInputTokens: res.usage.cache_read_input_tokens ?? 0,
+      },
+      reportedCostUsd: null,
+    };
+  }
+
+  const cli = await runCli(`${system}\n\n${user}`, choice.model, 120_000);
+  return {
+    text: cli.resultText,
+    engine: "cli",
+    model: choice.model,
+    usage: cli.usage,
+    reportedCostUsd: cli.totalCostUsd,
+  };
 }

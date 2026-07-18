@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, FilePlus2, Layers, Wand2 } from "lucide-react";
+import { ArrowLeft, Columns2, FilePlus2, Layers, Upload, Wand2 } from "lucide-react";
 import type { ClientRecord, DocType, TemplateBuildRecord } from "@/lib/types";
 import { DOC_TYPE_NAMES, isDocType } from "@/lib/types";
 
@@ -53,6 +53,7 @@ function GenerateForm() {
   const [client, setClient] = useState<ClientRecord | null>(null);
   const [templates, setTemplates] = useState<BuildWithSpend[] | null>(null);
   const [templateBuildId, setTemplateBuildId] = useState<string>(searchParams.get("template") ?? "");
+  const [sourceType, setSourceType] = useState<"file" | "studio">("file");
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,12 +95,14 @@ function GenerateForm() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file || busy || !client) return;
+    if (busy || !client) return;
+    if (sourceType === "file" && !file) return;
     setBusy(true);
     setError(null);
 
     const form = new FormData();
-    form.set("file", file);
+    if (sourceType === "studio") form.set("sourceType", "studio");
+    else if (file) form.set("file", file);
     form.set("clientName", client.name);
     form.set("clientId", client.id);
     form.set("docType", docType);
@@ -224,28 +227,68 @@ function GenerateForm() {
 
         <div>
           <label className="block text-sm font-medium">Source content</label>
-          <input
-            required
-            type="file"
-            accept=".docx,.pdf,.txt,.md,.markdown"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            className="mt-1 w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium hover:file:bg-slate-200"
-          />
-          <p className="mt-1 text-xs text-slate-500">.docx, .pdf, .txt, or .md — scanned/image-only PDFs won&apos;t extract.</p>
+          <div className="mt-1 grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setSourceType("file")}
+              className={`flex items-start gap-2 rounded-md border px-3 py-2.5 text-left text-sm ${
+                sourceType === "file" ? "border-[#1F3A5F] bg-[#1F3A5F]/[0.04] font-medium" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
+              }`}
+            >
+              <Upload className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                Upload a file
+                <span className="block text-xs font-normal text-slate-500">.docx, .pdf, .txt, or .md</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSourceType("studio")}
+              className={`flex items-start gap-2 rounded-md border px-3 py-2.5 text-left text-sm ${
+                sourceType === "studio" ? "border-[#1F3A5F] bg-[#1F3A5F]/[0.04] font-medium" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
+              }`}
+            >
+              <Columns2 className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                Content Studio document
+                <span className="block text-xs font-normal text-slate-500">Use this client&apos;s {docType.toUpperCase()} studio doc</span>
+              </span>
+            </button>
+          </div>
+          {sourceType === "file" ? (
+            <>
+              <input
+                type="file"
+                accept=".docx,.pdf,.txt,.md,.markdown"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="mt-2 w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium hover:file:bg-slate-200"
+              />
+              <p className="mt-1 text-xs text-slate-500">Scanned/image-only PDFs won&apos;t extract.</p>
+            </>
+          ) : (
+            <p className="mt-2 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              The saved studio document becomes the run&apos;s source (and its exact JSON is stored in the audit
+              trail).{" "}
+              <Link href={`/clients/${clientId}/studio/${docType}`} className="font-medium text-[#1F3A5F] underline">
+                Open the Content Studio
+              </Link>{" "}
+              to review it first.
+            </p>
+          )}
         </div>
 
         {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
         <button
           type="submit"
-          disabled={busy || !file}
+          disabled={busy || (sourceType === "file" && !file)}
           className="inline-flex items-center gap-1.5 rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
-          <FilePlus2 className="h-4 w-4" /> {busy ? "Processing… this can take a few minutes" : "Generate document"}
+          <FilePlus2 className="h-4 w-4" /> {busy ? "Starting…" : "Generate document"}
         </button>
         {busy && (
           <p className="text-xs text-slate-500">
-            Extraction is a single structured model call — leave this page open until it finishes.
+            Extraction runs in the background — you&apos;ll land on the run page, which tracks progress live.
           </p>
         )}
       </form>

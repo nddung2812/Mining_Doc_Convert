@@ -30,8 +30,11 @@ export default function BlockEditor({ initial, onChange, apiRef }: Props) {
   const holderRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<EditorJS | null>(null);
   const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
   const initialRef = useRef(initial);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   useEffect(() => {
     let destroyed = false;

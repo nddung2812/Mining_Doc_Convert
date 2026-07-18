@@ -51,10 +51,14 @@ Every run records which prompt/schema/template version produced it.
 
 ## Review model (approval gate)
 
-Extraction never renders directly. A run lands in **awaiting review**; a named reviewer inspects
-the extracted JSON (confidence flags, NOT FOUND fields, warnings), then approves — which records
-their name in the audit trail and releases the deterministic render. Downloads are blocked until
-approval. This mirrors Eve's `approval` primitive so both runtimes share one review model.
+Extraction runs in the **background**: creating a run returns immediately with status
+`generating`, the run page polls until it flips, and a stale-run rescue self-heals runs whose
+worker died mid-extraction. A run then lands in **awaiting review**; a named reviewer inspects
+the extracted JSON (confidence flags, per-field verbatim **source quotes**, NOT FOUND fields,
+warnings), can **amend individual fields in place** (each amendment is schema-validated and the
+model's original value is kept in the audit trail), then approves — which records their name in
+the audit trail and releases the deterministic render. Downloads are blocked until approval.
+This mirrors Eve's `approval` primitive so both runtimes share one review model.
 
 ## Per-client templates
 
@@ -87,6 +91,7 @@ subscription). Auth is disabled while `APP_PASSWORD` is unset. Runs are stored i
 Pipeline tests without spending anything:
 
 ```bash
+npm test             # vitest: sanitizer, blocks→html/text/docx, schema gates, auth tokens, cost math
 npm run templates    # regenerate templates/*.docx
 npm run test:render  # render all three with dummy data → data/test-output/
 ```
@@ -96,13 +101,18 @@ npm run test:render  # render all three with dummy data → data/test-output/
 1. Push this repo to GitHub and import it in Vercel (or `vercel deploy`).
 2. Set environment variables (see `.env.example`):
    - `APP_PASSWORD` — **required**; these are client compliance docs, never deploy open.
+   - `SESSION_SECRET` — optional; signs the expiring session cookies. Rotate it to revoke every
+     session without changing the password (unset, the key derives from `APP_PASSWORD`).
    - `DAILY_COST_CAP_USD` — daily API spend cap (default 10).
    - `ANTHROPIC_API_KEY` — optional; leave unset to force every user to bring their own key
      (Settings page), which is the intended multi-user model.
    - `AI_GATEWAY_API_KEY` — optional; same story for multi-vendor models via the AI Gateway.
      Leave unset so users bring their own gateway key.
 3. Attach a **Vercel Blob** store to the project (Storage tab). `BLOB_READ_WRITE_TOKEN` is injected
-   automatically and the app switches from filesystem to Blob storage.
+   automatically and the app switches from filesystem to Blob storage. Everything is written as
+   **private** blobs (no public URLs; reads are SDK-authorized). Blobs written by versions before
+   the private switch stay public until overwritten — rewrite or delete them when upgrading a
+   deployment that has real client data.
 
 ## Non-negotiables baked in
 
@@ -111,8 +121,14 @@ npm run test:render  # render all three with dummy data → data/test-output/
   `«NOT FOUND — REVIEW REQUIRED»` in the draft; every draft carries a DRAFT footer.
 - **Audit log per run**: source filename + SHA-256, prompt/schema/template versions, engine, model,
   token usage, cost, extracted JSON, and download timestamps.
-- **Cost guardrail**: API-engine runs stop for the day once `DAILY_COST_CAP_USD` is reached.
-- **Auth**: password gate on every page and API route when `APP_PASSWORD` is set.
+- **Cost guardrail**: paid-engine calls (runs, template builds, studio block revisions) stop for
+  the day once `DAILY_COST_CAP_USD` is reached — tracked in an O(1) daily ledger
+  (`data/state/spend-<day>.json`), seeded from history on first touch of each day.
+- **Auth**: password gate on every page and API route when `APP_PASSWORD` is set — HMAC-signed
+  expiring sessions (14 days) and a per-IP brute-force throttle on login.
+- **Sanitized preview**: all block HTML (including AI-revised blocks) passes an allowlist
+  sanitizer before reaching the studio preview/print views, so a prompt-injected source document
+  can't script its way to the BYOK keys in the browser.
 
 ## Data handling (decide consciously before onboarding a client)
 

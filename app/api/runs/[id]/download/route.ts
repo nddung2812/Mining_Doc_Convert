@@ -8,7 +8,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const storage = getStorage();
   const run = await storage.getRun(id);
   if (!run) return NextResponse.json({ error: "Run not found" }, { status: 404 });
-  if (run.status === "awaiting_review") {
+  if (run.status !== "complete") {
     return NextResponse.json({ error: "This run has not been approved yet — the render is gated on review." }, { status: 409 });
   }
 

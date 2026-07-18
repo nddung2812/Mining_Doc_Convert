@@ -1,29 +1,22 @@
 import { createHash, randomUUID } from "crypto";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { isDocType, type RunRecord } from "@/lib/types";
 import { getDocTypeAssets } from "@/lib/doctypes";
 import { extractSourceText } from "@/lib/source";
 import { ExtractionError, resolveEngine, runExtraction } from "@/lib/engine";
-import { NOT_FOUND_SENTINEL } from "@/lib/render";
 import { getStorage } from "@/lib/storage";
-import { apiSpendTodayUsd, buildApiSpendTodayUsd, dailyCapUsd, estimateCostUsd } from "@/lib/cost";
+import { estimateCostUsd } from "@/lib/cost";
+import { capReachedMessage, dailyCapStatus, recordSpend } from "@/lib/ledger";
+import { confidenceSummary, listRunsRescued } from "@/lib/runs";
+import { blocksToText, type EditorDoc } from "@/lib/blocks";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function GET() {
-  const runs = await getStorage().listRuns();
-  // History list: strip the heavy extracted payload.
-  return NextResponse.json(runs.map(({ extracted: _e, ...rest }) => rest));
-}
-
-function countNotFound(value: unknown): number {
-  if (typeof value === "string") return value === NOT_FOUND_SENTINEL ? 1 : 0;
-  if (Array.isArray(value)) return value.reduce((n: number, v) => n + countNotFound(v), 0);
-  if (value && typeof value === "object") {
-    return Object.values(value).reduce((n: number, v) => n + countNotFound(v), 0);
-  }
-  return 0;
+  const runs = await listRunsRescued();
+  // History list: strip the heavy extracted payload (undefined drops in JSON).
+  return NextResponse.json(runs.map((run) => ({ ...run, extracted: undefined })));
 }
 
 export async function POST(request: NextRequest) {
@@ -40,8 +33,8 @@ export async function POST(request: NextRequest) {
   let clientName = String(form.get("clientName") ?? "").trim();
   const clientIdRaw = String(form.get("clientId") ?? "").trim();
   const docTypeRaw = String(form.get("docType") ?? "");
+  const sourceType = String(form.get("sourceType") ?? "file");
 
-  if (!(file instanceof File)) return NextResponse.json({ error: "Missing source file" }, { status: 400 });
   if (!isDocType(docTypeRaw)) return NextResponse.json({ error: "Invalid doc type" }, { status: 400 });
   const docType = docTypeRaw;
 
@@ -54,6 +47,46 @@ export async function POST(request: NextRequest) {
     clientName = client.name;
   }
   if (!clientName) return NextResponse.json({ error: "Missing client name" }, { status: 400 });
+
+  // Source content: an uploaded file, or the client's Content Studio document.
+  let sourceBuffer: Buffer;
+  let sourceFilename: string;
+  let sourceText: string;
+  if (sourceType === "studio") {
+    if (!clientId) {
+      return NextResponse.json({ error: "Studio documents belong to a registered client" }, { status: 400 });
+    }
+    const studioFile = `studio-${docType}.json`;
+    const buf = await storage.getClientFile(clientId, studioFile);
+    if (!buf) {
+      return NextResponse.json(
+        { error: "No studio document for this document type yet — open the Content Studio and write one first." },
+        { status: 400 },
+      );
+    }
+    let doc: EditorDoc;
+    try {
+      doc = JSON.parse(buf.toString("utf8")) as EditorDoc;
+    } catch {
+      return NextResponse.json({ error: "The saved studio document is unreadable" }, { status: 400 });
+    }
+    sourceText = blocksToText(doc);
+    if (!sourceText.trim()) {
+      return NextResponse.json({ error: "The studio document is empty — add some content first." }, { status: 400 });
+    }
+    // Audit trail: the exact studio JSON is the run's stored source.
+    sourceBuffer = buf;
+    sourceFilename = studioFile;
+  } else {
+    if (!(file instanceof File)) return NextResponse.json({ error: "Missing source file" }, { status: 400 });
+    sourceBuffer = Buffer.from(await file.arrayBuffer());
+    sourceFilename = file.name;
+    try {
+      sourceText = await extractSourceText(file.name, sourceBuffer);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Unreadable source" }, { status: 400 });
+    }
+  }
 
   // An explicit template choice must be a finalized build of this client+type.
   let templateBuildId: string | null = null;
@@ -78,39 +111,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Engine error" }, { status: 400 });
   }
   if (choice.engine !== "cli") {
-    const spent = apiSpendTodayUsd(await storage.listRuns()) + buildApiSpendTodayUsd(await storage.listBuilds());
-    const cap = dailyCapUsd();
-    if (spent >= cap) {
-      return NextResponse.json(
-        { error: `Daily API spend cap reached (US$${spent.toFixed(2)} of US$${cap.toFixed(2)}). Try again tomorrow or raise DAILY_COST_CAP_USD.` },
-        { status: 429 },
-      );
-    }
-  }
-
-  const sourceBuffer = Buffer.from(await file.arrayBuffer());
-  let sourceText: string;
-  try {
-    sourceText = await extractSourceText(file.name, sourceBuffer);
-  } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Unreadable source" }, { status: 400 });
+    const cap = await dailyCapStatus();
+    if (cap.overCap) return NextResponse.json({ error: capReachedMessage(cap) }, { status: 429 });
   }
 
   const assets = getDocTypeAssets(docType);
   const id = randomUUID();
   const createdAt = new Date().toISOString();
 
-  const base: RunRecord = {
+  const run: RunRecord = {
     id,
     createdAt,
-    status: "failed",
+    status: "generating",
+    generationStartedAt: createdAt,
+    updatedAt: createdAt,
     approval: null,
     clientId,
     clientName,
     docType,
     templateBuildId,
     source: {
-      filename: file.name,
+      filename: sourceFilename,
       bytes: sourceBuffer.length,
       sha256: createHash("sha256").update(sourceBuffer).digest("hex"),
     },
@@ -128,40 +149,37 @@ export async function POST(request: NextRequest) {
     downloads: [],
   };
 
-  await storage.saveFile(id, `source-${file.name.replace(/[^\w.\-]+/g, "_")}`, sourceBuffer);
+  await storage.saveFile(id, `source-${sourceFilename.replace(/[^\w.\-]+/g, "_")}`, sourceBuffer);
+  await storage.saveRun(run);
 
-  try {
-    const output = await runExtraction(docType, clientName, sourceText, choice);
+  // Extraction runs after the response — the run page polls while generating,
+  // and rescueStaleRun self-heals if this worker dies mid-run.
+  after(async () => {
+    try {
+      const output = await runExtraction(docType, clientName, sourceText, choice);
+      const costUsd = estimateCostUsd(output);
+      await recordSpend(output.engine, costUsd);
 
-    // Approval gate: extraction is done, but rendering waits for a named
-    // reviewer to approve the extracted content (POST /api/runs/[id]/approve).
-    const levels = output.extracted.meta.field_confidence;
-    const run: RunRecord = {
-      ...base,
-      status: "awaiting_review",
-      engine: output.engine,
-      model: output.model,
-      usage: output.usage,
-      costUsd: estimateCostUsd(output),
-      extracted: output.extracted,
-      validation: { valid: true, errors: [] },
-      confidenceSummary: {
-        high: levels.filter((f) => f.level === "high").length,
-        medium: levels.filter((f) => f.level === "medium").length,
-        low: levels.filter((f) => f.level === "low").length,
-        notFound: countNotFound(output.extracted.document),
-        warnings: output.extracted.meta.warnings.length,
-      },
-    };
+      // Approval gate: extraction is done, but rendering waits for a named
+      // reviewer to approve the extracted content (POST /api/runs/[id]/approve).
+      run.status = "awaiting_review";
+      run.engine = output.engine;
+      run.model = output.model;
+      run.usage = output.usage;
+      run.costUsd = costUsd;
+      run.extracted = output.extracted;
+      run.validation = { valid: true, errors: [] };
+      run.confidenceSummary = confidenceSummary(output.extracted);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Extraction failed";
+      run.status = "failed";
+      run.error = message;
+      run.validation = { valid: false, errors: e instanceof ExtractionError ? [message] : [] };
+    }
+    run.generationStartedAt = null;
+    run.updatedAt = new Date().toISOString();
     await storage.saveRun(run);
-    return NextResponse.json({ id, status: run.status });
-  } catch (e) {
-    const message = e instanceof Error ? e.message : "Extraction failed";
-    await storage.saveRun({
-      ...base,
-      error: message,
-      validation: { valid: false, errors: e instanceof ExtractionError ? [message] : [] },
-    });
-    return NextResponse.json({ id, status: "failed", error: message }, { status: 502 });
-  }
+  });
+
+  return NextResponse.json({ id, status: run.status });
 }

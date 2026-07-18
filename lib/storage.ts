@@ -18,11 +18,19 @@ export interface Storage {
   listBuilds(): Promise<TemplateBuildRecord[]>;
   saveBuildFile(buildId: string, name: string, data: Buffer): Promise<void>;
   getBuildFile(buildId: string, name: string): Promise<Buffer | null>;
+  /** Remove a client record and every file under it (templates, materials, studio docs). */
+  deleteClient(id: string): Promise<void>;
+  /** Remove a build record and its material/template files. */
+  deleteBuild(id: string): Promise<void>;
+  /** App-wide state files (e.g. the daily spend ledger), not tied to a record. */
+  saveStateFile(name: string, data: Buffer): Promise<void>;
+  getStateFile(name: string): Promise<Buffer | null>;
 }
 
 const DATA_DIR = path.join(process.cwd(), "data", "runs");
 const CLIENTS_DIR = path.join(process.cwd(), "data", "clients");
 const BUILDS_DIR = path.join(process.cwd(), "data", "builds");
+const STATE_DIR = path.join(process.cwd(), "data", "state");
 
 class LocalStorage implements Storage {
   private dir(runId: string): string {
@@ -164,199 +172,170 @@ class LocalStorage implements Storage {
       return null;
     }
   }
+
+  async deleteClient(id: string): Promise<void> {
+    await fs.promises.rm(this.clientDir(id), { recursive: true, force: true });
+  }
+
+  async deleteBuild(id: string): Promise<void> {
+    await fs.promises.rm(this.buildDir(id), { recursive: true, force: true });
+  }
+
+  async saveStateFile(name: string, data: Buffer): Promise<void> {
+    await fs.promises.mkdir(STATE_DIR, { recursive: true });
+    await fs.promises.writeFile(path.join(STATE_DIR, path.basename(name)), data);
+  }
+
+  async getStateFile(name: string): Promise<Buffer | null> {
+    try {
+      return await fs.promises.readFile(path.join(STATE_DIR, path.basename(name)));
+    } catch {
+      return null;
+    }
+  }
 }
 
 const BLOB_PREFIX = "mdocconvert/runs";
 const BLOB_CLIENT_PREFIX = "mdocconvert/clients";
 const BLOB_BUILD_PREFIX = "mdocconvert/builds";
+const BLOB_STATE_PREFIX = "mdocconvert/state";
 
+/**
+ * Everything here is client compliance content, so blobs are stored PRIVATE:
+ * no public URL, every read authorized through the SDK with the store
+ * credential. Blobs written by pre-private versions of the app stay public
+ * until overwritten — rewrite or delete them when upgrading a real deployment.
+ */
 class BlobStorage implements Storage {
   private async blob() {
     return import("@vercel/blob");
   }
 
-  async saveRun(run: RunRecord): Promise<void> {
+  private async write(pathname: string, data: Buffer | string, contentType?: string): Promise<void> {
     const { put } = await this.blob();
-    await put(`${BLOB_PREFIX}/${run.id}/run.json`, JSON.stringify(run), {
-      access: "public",
-      contentType: "application/json",
+    await put(pathname, data, {
+      access: "private",
+      ...(contentType ? { contentType } : {}),
       addRandomSuffix: false,
       allowOverwrite: true,
     });
+  }
+
+  /** `useCache: false` because records are overwritten in place and a stale
+   *  CDN copy would corrupt the run/build state machines. */
+  private async read(pathname: string): Promise<Buffer | null> {
+    const { get } = await this.blob();
+    try {
+      const result = await get(pathname, { access: "private", useCache: false });
+      if (!result || !result.stream) return null;
+      return Buffer.from(await new Response(result.stream).arrayBuffer());
+    } catch {
+      return null;
+    }
+  }
+
+  private async readJson<T>(pathname: string): Promise<T | null> {
+    const buf = await this.read(pathname);
+    if (!buf) return null;
+    try {
+      return JSON.parse(buf.toString("utf8")) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  private async listJson<T>(prefix: string, filename: string): Promise<T[]> {
+    const { list } = await this.blob();
+    const { blobs } = await list({ prefix: `${prefix}/` });
+    const records = await Promise.all(
+      blobs.filter((b) => b.pathname.endsWith(`/${filename}`)).map((b) => this.readJson<T>(b.pathname)),
+    );
+    return records.filter((r): r is Awaited<T> => r !== null);
+  }
+
+  async saveRun(run: RunRecord): Promise<void> {
+    await this.write(`${BLOB_PREFIX}/${run.id}/run.json`, JSON.stringify(run), "application/json");
   }
 
   async getRun(id: string): Promise<RunRecord | null> {
-    const { head } = await this.blob();
-    try {
-      const meta = await head(`${BLOB_PREFIX}/${id}/run.json`);
-      const res = await fetch(meta.url, { cache: "no-store" });
-      if (!res.ok) return null;
-      return (await res.json()) as RunRecord;
-    } catch {
-      return null;
-    }
+    return this.readJson<RunRecord>(`${BLOB_PREFIX}/${id}/run.json`);
   }
 
   async listRuns(): Promise<RunRecord[]> {
-    const { list } = await this.blob();
-    const { blobs } = await list({ prefix: `${BLOB_PREFIX}/` });
-    const runBlobs = blobs.filter((b) => b.pathname.endsWith("/run.json"));
-    const runs = await Promise.all(
-      runBlobs.map(async (b) => {
-        try {
-          const res = await fetch(b.url, { cache: "no-store" });
-          return res.ok ? ((await res.json()) as RunRecord) : null;
-        } catch {
-          return null;
-        }
-      }),
-    );
-    return runs
-      .filter((r): r is RunRecord => r !== null)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const runs = await this.listJson<RunRecord>(BLOB_PREFIX, "run.json");
+    return runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async saveFile(runId: string, name: string, data: Buffer): Promise<void> {
-    const { put } = await this.blob();
-    await put(`${BLOB_PREFIX}/${runId}/${name}`, data, {
-      access: "public",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
+    await this.write(`${BLOB_PREFIX}/${runId}/${name}`, data);
   }
 
   async getFile(runId: string, name: string): Promise<Buffer | null> {
-    const { head } = await this.blob();
-    try {
-      const meta = await head(`${BLOB_PREFIX}/${runId}/${name}`);
-      const res = await fetch(meta.url, { cache: "no-store" });
-      if (!res.ok) return null;
-      return Buffer.from(await res.arrayBuffer());
-    } catch {
-      return null;
-    }
+    return this.read(`${BLOB_PREFIX}/${runId}/${name}`);
   }
 
   async saveClient(client: ClientRecord): Promise<void> {
-    const { put } = await this.blob();
-    await put(`${BLOB_CLIENT_PREFIX}/${client.id}/client.json`, JSON.stringify(client), {
-      access: "public",
-      contentType: "application/json",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
+    await this.write(`${BLOB_CLIENT_PREFIX}/${client.id}/client.json`, JSON.stringify(client), "application/json");
   }
 
   async getClient(id: string): Promise<ClientRecord | null> {
-    const { head } = await this.blob();
-    try {
-      const meta = await head(`${BLOB_CLIENT_PREFIX}/${id}/client.json`);
-      const res = await fetch(meta.url, { cache: "no-store" });
-      return res.ok ? ((await res.json()) as ClientRecord) : null;
-    } catch {
-      return null;
-    }
+    return this.readJson<ClientRecord>(`${BLOB_CLIENT_PREFIX}/${id}/client.json`);
   }
 
   async listClients(): Promise<ClientRecord[]> {
-    const { list } = await this.blob();
-    const { blobs } = await list({ prefix: `${BLOB_CLIENT_PREFIX}/` });
-    const clients = await Promise.all(
-      blobs
-        .filter((b) => b.pathname.endsWith("/client.json"))
-        .map(async (b) => {
-          try {
-            const res = await fetch(b.url, { cache: "no-store" });
-            return res.ok ? ((await res.json()) as ClientRecord) : null;
-          } catch {
-            return null;
-          }
-        }),
-    );
-    return clients.filter((c): c is ClientRecord => c !== null).sort((a, b) => a.name.localeCompare(b.name));
+    const clients = await this.listJson<ClientRecord>(BLOB_CLIENT_PREFIX, "client.json");
+    return clients.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async saveClientFile(clientId: string, name: string, data: Buffer): Promise<void> {
-    const { put } = await this.blob();
-    await put(`${BLOB_CLIENT_PREFIX}/${clientId}/${name}`, data, {
-      access: "public",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
+    await this.write(`${BLOB_CLIENT_PREFIX}/${clientId}/${name}`, data);
   }
 
   async getClientFile(clientId: string, name: string): Promise<Buffer | null> {
-    const { head } = await this.blob();
-    try {
-      const meta = await head(`${BLOB_CLIENT_PREFIX}/${clientId}/${name}`);
-      const res = await fetch(meta.url, { cache: "no-store" });
-      if (!res.ok) return null;
-      return Buffer.from(await res.arrayBuffer());
-    } catch {
-      return null;
-    }
+    return this.read(`${BLOB_CLIENT_PREFIX}/${clientId}/${name}`);
   }
 
   async saveBuild(build: TemplateBuildRecord): Promise<void> {
-    const { put } = await this.blob();
-    await put(`${BLOB_BUILD_PREFIX}/${build.id}/build.json`, JSON.stringify(build), {
-      access: "public",
-      contentType: "application/json",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
+    await this.write(`${BLOB_BUILD_PREFIX}/${build.id}/build.json`, JSON.stringify(build), "application/json");
   }
 
   async getBuild(id: string): Promise<TemplateBuildRecord | null> {
-    const { head } = await this.blob();
-    try {
-      const meta = await head(`${BLOB_BUILD_PREFIX}/${id}/build.json`);
-      const res = await fetch(meta.url, { cache: "no-store" });
-      return res.ok ? ((await res.json()) as TemplateBuildRecord) : null;
-    } catch {
-      return null;
-    }
+    return this.readJson<TemplateBuildRecord>(`${BLOB_BUILD_PREFIX}/${id}/build.json`);
   }
 
   async listBuilds(): Promise<TemplateBuildRecord[]> {
-    const { list } = await this.blob();
-    const { blobs } = await list({ prefix: `${BLOB_BUILD_PREFIX}/` });
-    const builds = await Promise.all(
-      blobs
-        .filter((b) => b.pathname.endsWith("/build.json"))
-        .map(async (b) => {
-          try {
-            const res = await fetch(b.url, { cache: "no-store" });
-            return res.ok ? ((await res.json()) as TemplateBuildRecord) : null;
-          } catch {
-            return null;
-          }
-        }),
-    );
-    return builds
-      .filter((b): b is TemplateBuildRecord => b !== null)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const builds = await this.listJson<TemplateBuildRecord>(BLOB_BUILD_PREFIX, "build.json");
+    return builds.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async saveBuildFile(buildId: string, name: string, data: Buffer): Promise<void> {
-    const { put } = await this.blob();
-    await put(`${BLOB_BUILD_PREFIX}/${buildId}/${name}`, data, {
-      access: "public",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-    });
+    await this.write(`${BLOB_BUILD_PREFIX}/${buildId}/${name}`, data);
   }
 
   async getBuildFile(buildId: string, name: string): Promise<Buffer | null> {
-    const { head } = await this.blob();
-    try {
-      const meta = await head(`${BLOB_BUILD_PREFIX}/${buildId}/${name}`);
-      const res = await fetch(meta.url, { cache: "no-store" });
-      if (!res.ok) return null;
-      return Buffer.from(await res.arrayBuffer());
-    } catch {
-      return null;
-    }
+    return this.read(`${BLOB_BUILD_PREFIX}/${buildId}/${name}`);
+  }
+
+  private async deletePrefix(prefix: string): Promise<void> {
+    const { list, del } = await this.blob();
+    const { blobs } = await list({ prefix });
+    if (blobs.length > 0) await del(blobs.map((b) => b.url));
+  }
+
+  async deleteClient(id: string): Promise<void> {
+    await this.deletePrefix(`${BLOB_CLIENT_PREFIX}/${id}/`);
+  }
+
+  async deleteBuild(id: string): Promise<void> {
+    await this.deletePrefix(`${BLOB_BUILD_PREFIX}/${id}/`);
+  }
+
+  async saveStateFile(name: string, data: Buffer): Promise<void> {
+    await this.write(`${BLOB_STATE_PREFIX}/${name}`, data);
+  }
+
+  async getStateFile(name: string): Promise<Buffer | null> {
+    return this.read(`${BLOB_STATE_PREFIX}/${name}`);
   }
 }
 
