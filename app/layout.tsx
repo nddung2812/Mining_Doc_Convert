@@ -28,9 +28,6 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           </div>
         </header>
         <main className="mx-auto max-w-5xl px-6 py-8">{children}</main>
-        <footer className="mx-auto max-w-5xl px-6 pb-8 text-xs text-slate-400">
-          Drafting accelerator only — the qualified reviewer remains the author of record for every document.
-        </footer>
       </body>
     </html>
   );
