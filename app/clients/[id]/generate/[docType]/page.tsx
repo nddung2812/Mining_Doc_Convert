@@ -54,7 +54,7 @@ function GenerateForm() {
   const [templates, setTemplates] = useState<BuildWithSpend[] | null>(null);
   const [templateBuildId, setTemplateBuildId] = useState<string>(searchParams.get("template") ?? "");
   const [sourceType, setSourceType] = useState<"file" | "studio">("file");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gatewayModels, setGatewayModels] = useState<GatewayModelOption[]>([]);
@@ -96,13 +96,13 @@ function GenerateForm() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy || !client) return;
-    if (sourceType === "file" && !file) return;
+    if (sourceType === "file" && files.length === 0) return;
     setBusy(true);
     setError(null);
 
     const form = new FormData();
     if (sourceType === "studio") form.set("sourceType", "studio");
-    else if (file) form.set("file", file);
+    else for (const f of files) form.append("file", f);
     form.set("clientName", client.name);
     form.set("clientId", client.id);
     form.set("docType", docType);
@@ -117,7 +117,12 @@ function GenerateForm() {
 
     try {
       const res = await fetch("/api/runs", { method: "POST", body: form, headers });
-      const body = (await res.json()) as { id?: string; error?: string };
+      const body = (await res.json()) as { id?: string; ids?: string[]; error?: string };
+      if (body.ids && body.ids.length > 0) {
+        // Bulk batch accepted — History tracks every run in it.
+        router.push(`/runs/${body.ids[0]}`);
+        return;
+      }
       if (body.id) {
         router.push(`/runs/${body.id}`);
         return;
@@ -259,11 +264,22 @@ function GenerateForm() {
             <>
               <input
                 type="file"
+                multiple
                 accept=".docx,.pdf,.txt,.md,.markdown"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
                 className="mt-2 w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium hover:file:bg-slate-200"
               />
-              <p className="mt-1 text-xs text-slate-500">Scanned/image-only PDFs won&apos;t extract.</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Scanned/image-only PDFs won&apos;t extract. Select several files to queue them as a batch.
+              </p>
+              {files.length > 1 && (
+                <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+                  <span className="font-semibold">{files.length} files → cost-saving batch:</span> processed
+                  together through the Anthropic Batch API at <span className="font-semibold">50% of standard
+                  token prices</span>, results typically within the hour. Needs a Claude model with an Anthropic
+                  API key (gateway models and the local CLI can&apos;t batch).
+                </div>
+              )}
             </>
           ) : (
             <p className="mt-2 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
@@ -281,10 +297,11 @@ function GenerateForm() {
 
         <button
           type="submit"
-          disabled={busy || (sourceType === "file" && !file)}
+          disabled={busy || (sourceType === "file" && files.length === 0)}
           className="inline-flex items-center gap-1.5 rounded-md bg-[#1F3A5F] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
-          <FilePlus2 className="h-4 w-4" /> {busy ? "Starting…" : "Generate document"}
+          <FilePlus2 className="h-4 w-4" />{" "}
+          {busy ? "Starting…" : files.length > 1 ? `Queue ${files.length} documents (batch)` : "Generate document"}
         </button>
         {busy && (
           <p className="text-xs text-slate-500">

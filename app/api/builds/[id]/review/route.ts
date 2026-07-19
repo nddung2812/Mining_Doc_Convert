@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { MAX_REVIEW_ROUNDS } from "@/lib/types";
 import { getStorage } from "@/lib/storage";
 import { resolveEngine } from "@/lib/engine";
-import { runTemplateDesign } from "@/lib/template-engine";
+import { runCheckedTemplateDesign } from "@/lib/template-engine";
 import { designInputFromBuild, latestSpec, parseFeedback, reviewRoundsUsed } from "@/lib/builds";
 import { estimateCostUsd } from "@/lib/cost";
 import { capReachedMessage, dailyCapStatus, recordSpend } from "@/lib/ledger";
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   after(async () => {
     const started = Date.now();
     try {
-      const output = await runTemplateDesign(await designInputFromBuild(build, { previousSpec, feedback }), choice);
+      const output = await runCheckedTemplateDesign(await designInputFromBuild(build, { previousSpec, feedback }), choice);
       const costUsd = estimateCostUsd(output);
       await recordSpend(output.engine, costUsd);
       build.iterations.push({

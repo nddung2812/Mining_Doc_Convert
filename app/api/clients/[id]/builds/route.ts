@@ -1,9 +1,16 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse, after } from "next/server";
-import { isDocType, type BuildMaterialFile, type BuildProvider, type TemplateBuildRecord } from "@/lib/types";
-import { getStorage } from "@/lib/storage";
+import {
+  isDocType,
+  type BuildMaterialFile,
+  type BuildProvider,
+  type ClientRecord,
+  type TemplateBuildRecord,
+} from "@/lib/types";
+import { getStorage, type Storage } from "@/lib/storage";
 import { resolveEngine } from "@/lib/engine";
-import { runTemplateDesign } from "@/lib/template-engine";
+import { runCheckedTemplateDesign } from "@/lib/template-engine";
+import { specFromBrandKit } from "@/lib/brand";
 import { buildSpendUsd, designInputFromBuild, expectedRoundMs, rescueStaleBuild, sanitizeFilename } from "@/lib/builds";
 import { parseLogo } from "@/lib/template-compile";
 import { estimateCostUsd } from "@/lib/cost";
@@ -34,14 +41,94 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 }
 
 /**
+ * Brand-kit derivation: a complete, review-ready template built deterministically
+ * from the client's existing brand — zero model calls, zero cost, instant. The
+ * build lands in "review" so the normal preview/feedback/finalize flow applies.
+ */
+async function createFromBrandKit(request: NextRequest, client: ClientRecord, storage: Storage) {
+  const body = (await request.json().catch(() => ({}))) as { mode?: string; docType?: string; name?: string };
+  if (body.mode !== "brand") return NextResponse.json({ error: "Unknown build mode" }, { status: 400 });
+  if (!body.docType || !isDocType(body.docType)) return NextResponse.json({ error: "Invalid doc type" }, { status: 400 });
+  const docType = body.docType;
+  const kit = client.brandKit;
+  if (!kit) {
+    return NextResponse.json(
+      { error: "This client has no brand kit yet — finalise one AI-designed template first." },
+      { status: 400 },
+    );
+  }
+
+  const buildId = randomUUID();
+  const createdAt = new Date().toISOString();
+
+  // The kit references the logo inside its source build — copy it so this
+  // build compiles (and survives) independently of the source build.
+  let logo: BuildMaterialFile | null = null;
+  if (kit.logoFilename) {
+    const buffer = await storage.getBuildFile(kit.derivedFrom.buildId, kit.logoFilename);
+    if (buffer) {
+      await storage.saveBuildFile(buildId, kit.logoFilename, buffer);
+      logo = { filename: kit.logoFilename, bytes: buffer.length };
+    }
+  }
+
+  const spec = specFromBrandKit(docType, kit, client.name, logo !== null);
+  const priorForType = (await storage.listBuilds()).filter(
+    (b) => b.clientId === client.id && b.docType === docType,
+  ).length;
+
+  const build: TemplateBuildRecord = {
+    id: buildId,
+    clientId: client.id,
+    clientName: client.name,
+    docType,
+    name:
+      String(body.name ?? "").trim().slice(0, 80) ||
+      `${docType.toUpperCase()} template ${priorForType + 1} (brand kit)`,
+    createdAt,
+    updatedAt: createdAt,
+    status: "review",
+    generationStartedAt: null,
+    brief: `Derived from the client's brand kit (their finalised ${kit.derivedFrom.docType.toUpperCase()} template). Keep future revisions consistent with that brand.`,
+    provider: "anthropic",
+    model: "", // review rounds (if any) resolve the default engine/model
+    materials: { logo, fonts: [], styleGuides: [], references: [] },
+    iterations: [
+      {
+        version: 1,
+        createdAt,
+        durationMs: 0,
+        spec,
+        engine: "derived",
+        model: "brand-kit",
+        usage: null,
+        costUsd: null,
+        feedback: null,
+        reviewedAt: null,
+      },
+    ],
+    final: null,
+    error: null,
+  };
+  await storage.saveBuild(build);
+  return NextResponse.json({ id: buildId, status: "review" });
+}
+
+/**
  * Start a template build: store the uploaded brand materials, then run the
  * first design round. Synchronous like /api/runs — the wizard stays open.
+ * A JSON body with mode:"brand" instead derives the template from the client's
+ * brand kit deterministically (no AI round).
  */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const storage = getStorage();
   const client = await storage.getClient(id);
   if (!client) return NextResponse.json({ error: "Client not found" }, { status: 404 });
+
+  if ((request.headers.get("content-type") ?? "").includes("application/json")) {
+    return createFromBrandKit(request, client, storage);
+  }
 
   let form: FormData;
   try {
@@ -162,7 +249,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   after(async () => {
     const started = Date.now();
     try {
-      const output = await runTemplateDesign(await designInputFromBuild(build), choice);
+      const output = await runCheckedTemplateDesign(await designInputFromBuild(build), choice);
       const costUsd = estimateCostUsd(output);
       await recordSpend(output.engine, costUsd);
       build.status = "review";

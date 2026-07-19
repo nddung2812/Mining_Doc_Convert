@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Send,
   Wand2,
+  Zap,
 } from "lucide-react";
 import type { ClientRecord, DocType, TemplateBuildRecord } from "@/lib/types";
 import { DOC_TYPE_NAMES, MAX_REVIEW_ROUNDS, isDocType } from "@/lib/types";
@@ -278,6 +279,33 @@ export default function BuildWizardPage() {
       stopBuildingAnimation();
       setError("Network error — the revision may still be running. Reload in a minute.");
       setStage("review");
+    }
+    setSubmitting(false);
+  }
+
+  /** Brand-kit path: deterministic derivation, lands straight in review. */
+  async function createFromBrand() {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/clients/${clientId}/builds`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "brand", docType, name: templateName }),
+      });
+      const body = (await res.json()) as { id?: string; error?: string };
+      if (res.ok && body.id) {
+        setComments({});
+        setOpenComment({});
+        await loadBuild(body.id);
+        setStage("review");
+        window.scrollTo({ top: 0 });
+      } else {
+        setError(body.error ?? `Request failed (${res.status})`);
+      }
+    } catch {
+      setError("Network error — is the server still running?");
     }
     setSubmitting(false);
   }
@@ -567,6 +595,31 @@ export default function BuildWizardPage() {
   return (
     <div className="space-y-6">
       {header}
+
+      {client?.brandKit && (
+        <div className="rounded-lg border border-emerald-200 border-l-4 border-l-emerald-600 bg-white p-6 shadow-sm">
+          <h2 className="inline-flex items-center gap-2 font-semibold text-emerald-700">
+            <Zap className="h-4 w-4" /> {clientName} already has a brand
+          </h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Their finalised {client.brandKit.derivedFrom.docType.toUpperCase()} template defined a brand kit —
+            colours, fonts, cover treatment, and table styling. Create this {docType.toUpperCase()} template from
+            it instantly: same look, no AI round, no cost. You can still request AI changes during review.
+          </p>
+          <button
+            type="button"
+            onClick={() => void createFromBrand()}
+            disabled={submitting}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+          >
+            <Zap className="h-4 w-4" /> {submitting ? "Creating…" : "Use the existing brand — instant"}
+          </button>
+          <p className="mt-2 text-xs text-slate-500">
+            Or design this one from scratch with new materials below — finalising it will update the brand kit.
+          </p>
+        </div>
+      )}
+
       <form onSubmit={startBuild} className="space-y-6">
         <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="font-semibold">1. Brand materials <span className="font-normal text-slate-400">(all optional)</span></h2>

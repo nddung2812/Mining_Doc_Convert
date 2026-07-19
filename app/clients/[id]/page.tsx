@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, BadgeCheck, Coins, Columns2, FilePlus2, Layers, Pencil, Wand2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, BadgeCheck, Coins, Columns2, FilePlus2, Layers, Pencil, Trash2, Wand2 } from "lucide-react";
 import type { ClientRecord, TemplateBuildRecord } from "@/lib/types";
 import { DOC_TYPE_NAMES, MAX_REVIEW_ROUNDS, type DocType } from "@/lib/types";
 
@@ -27,9 +27,32 @@ function formatUsd(v: number): string {
 
 export default function ClientWorkspacePage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const [client, setClient] = useState<ClientRecord | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [builds, setBuilds] = useState<BuildWithSpend[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  async function deleteClient() {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch(`/api/clients/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        router.push("/");
+        return;
+      }
+      const body = (await res.json()) as { error?: string };
+      setDeleteError(body.error ?? `Delete failed (${res.status})`);
+    } catch {
+      setDeleteError("Network error — is the server still running?");
+    }
+    setDeleting(false);
+    setConfirmDelete(false);
+  }
 
   const refresh = useCallback(async () => {
     const [clientRes, buildsRes] = await Promise.all([
@@ -167,6 +190,44 @@ export default function ClientWorkspacePage() {
             </div>
           );
         })}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-4 text-xs text-slate-500 shadow-sm">
+        {deleteError ? (
+          <span className="text-red-600">{deleteError}</span>
+        ) : confirmDelete ? (
+          <span className="text-red-700">
+            Delete <span className="font-semibold">{client.name}</span> with all their templates, materials, and
+            studio content? Generated documents stay in History. This cannot be undone.
+          </span>
+        ) : (
+          <span>Deleting a client removes their templates and materials; generated documents stay in History.</span>
+        )}
+        {confirmDelete ? (
+          <span className="flex gap-2">
+            <button
+              onClick={() => void deleteClient()}
+              disabled={deleting}
+              className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 font-medium text-white disabled:opacity-50"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> {deleting ? "Deleting…" : "Yes, delete client"}
+            </button>
+            <button
+              onClick={() => setConfirmDelete(false)}
+              disabled={deleting}
+              className="rounded-md border border-slate-300 px-3 py-1.5 font-medium text-slate-700"
+            >
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-red-200 px-3 py-1.5 font-medium text-red-600 hover:border-red-400"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Delete client
+          </button>
+        )}
       </div>
     </div>
   );

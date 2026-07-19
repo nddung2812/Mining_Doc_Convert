@@ -1,13 +1,21 @@
 import fs from "fs";
 import path from "path";
-import { spawn } from "child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import { generateObject, jsonSchema } from "ai";
 import { createGateway } from "@ai-sdk/gateway";
 import type { DocType, EngineId, SectionFeedback, TemplateSpec } from "./types";
 import { DOC_TYPE_NAMES } from "./types";
-import { ExtractionError, gatewayCostUsd, type EngineChoice, type EngineOutput } from "./engine";
-import { getSpecSchema, normalizeSpec, sectionCatalog } from "./template-spec";
+import { ExtractionError, gatewayCostUsd, runCli, type EngineChoice, type EngineOutput } from "./engine";
+import {
+  applySpecPatch,
+  getSpecPatchSchema,
+  getSpecSchema,
+  guardSpecPatch,
+  lintSpec,
+  normalizeSpec,
+  patchIsEmpty,
+  sectionCatalog,
+} from "./template-spec";
 
 const MAX_MATERIAL_CHARS = 30_000;
 
@@ -22,6 +30,8 @@ export interface DesignInput {
   /** Present on revision rounds only. */
   previousSpec?: TemplateSpec;
   feedback?: SectionFeedback[];
+  /** Present on the automatic lint-repair round only. */
+  repairNotes?: string[];
 }
 
 export interface SpecEngineOutput {
@@ -46,7 +56,18 @@ export function getDesignPrompt(): { text: string; version: string } {
 const clip = (text: string) =>
   text.length > MAX_MATERIAL_CHARS ? `${text.slice(0, MAX_MATERIAL_CHARS)}\n[…truncated]` : text;
 
-function buildDesignContent(input: DesignInput): string {
+/** Revision (or repair) rounds return a patch, not a full spec. */
+function isRevision(input: DesignInput): boolean {
+  return Boolean(input.previousSpec && ((input.feedback?.length ?? 0) > 0 || (input.repairNotes?.length ?? 0) > 0));
+}
+
+/**
+ * Everything that is identical across every round of a build: doc type, section
+ * catalog, materials, brief. Kept byte-stable on purpose — on the Anthropic
+ * engine this block carries a cache breakpoint, so revision rounds re-read it
+ * from the prompt cache at ~0.1x instead of re-paying the full materials.
+ */
+function buildStableContent(input: DesignInput): string {
   const catalog = sectionCatalog(input.docType)
     .map((s) => `- ${s.id} — "${s.defaultTitle}" — ${s.hint}`)
     .join("\n");
@@ -70,24 +91,64 @@ function buildDesignContent(input: DesignInput): string {
   }
 
   parts.push("", "<brief>", input.brief.trim() || "(none given — design from the materials)", "</brief>");
+  return parts.join("\n");
+}
 
-  if (input.previousSpec && input.feedback) {
+/** The per-round tail: previous spec + feedback (or lint repair notes). */
+function buildRevisionContent(input: DesignInput): string | null {
+  if (!isRevision(input)) return null;
+  const parts: string[] = [];
+
+  if (input.repairNotes?.length) {
     parts.push(
-      "",
+      "## Automated quality repair",
+      "The current TemplateSpec (below) failed an automated legibility/compatibility check:",
+      ...input.repairNotes.map((n) => `- ${n}`),
+    );
+  } else {
+    parts.push(
       "## Revision round",
-      "Previous TemplateSpec:",
-      "```json",
-      JSON.stringify(input.previousSpec, null, 2),
-      "```",
-      "",
       "Reviewer feedback by section:",
-      ...input.feedback.map((f) => `- [${f.sectionId}] ${f.comment}`),
-      "",
-      "Apply the feedback and return the complete revised TemplateSpec.",
+      ...(input.feedback ?? []).map((f) => `- [${f.sectionId}] ${f.comment}`),
     );
   }
 
+  parts.push(
+    "",
+    "Current TemplateSpec (already in force — do NOT restate unchanged fields):",
+    "```json",
+    JSON.stringify(input.previousSpec, null, 2),
+    "```",
+    "",
+    "Return ONLY a PATCH: a JSON object containing just the fields you are changing, plus a",
+    "design_rationale summarising what changed and why. Every field you omit is preserved",
+    "exactly as it is — that is the point. If you reorder or retitle sections, return the",
+    "complete `sections` array; otherwise omit it.",
+  );
+  if (input.repairNotes?.length) {
+    parts.push("Fix ONLY the listed issues. Keep the overall design intent intact.");
+  }
   return parts.join("\n");
+}
+
+function outputSchema(input: DesignInput): Record<string, unknown> {
+  return isRevision(input) ? getSpecPatchSchema() : (getSpecSchema().schema as Record<string, unknown>);
+}
+
+/**
+ * Turn whatever the engine returned into a safe, normalized spec. Revisions are
+ * patches: guarded against stray retitles, merged onto the previous spec (so
+ * uncommented decisions are stable by construction), then normalized.
+ */
+function specFromRaw(input: DesignInput, raw: unknown): TemplateSpec {
+  if (!isRevision(input)) return normalizeSpec(input.docType, raw);
+  if (patchIsEmpty(raw)) {
+    if (input.repairNotes?.length) return input.previousSpec!; // repair declined — keep the spec, lint notes surface to the reviewer
+    throw new ExtractionError("The design model returned no changes for this review — try more specific comments.");
+  }
+  const allowed = new Set((input.feedback ?? []).map((f) => f.sectionId));
+  const patch = guardSpecPatch(raw, input.previousSpec!, allowed);
+  return applySpecPatch(input.docType, input.previousSpec!, patch);
 }
 
 /** Pull the first top-level JSON object out of possibly-noisy model text. */
@@ -102,17 +163,32 @@ function parseJsonLoose(text: string): unknown {
   }
 }
 
+/**
+ * Review rounds are human-paced (someone studies a preview between rounds), so
+ * the 5-minute default TTL would routinely miss — the 1h TTL costs a 2x write
+ * once and repays every subsequent round at ~0.1x.
+ */
+const CACHE_1H = { type: "ephemeral", ttl: "1h" } as const;
+
 async function designViaApi(input: DesignInput, apiKey: string, model: string): Promise<SpecEngineOutput> {
-  const { schema } = getSpecSchema();
   const client = new Anthropic({ apiKey });
+  const revisionBlock = buildRevisionContent(input);
 
   const stream = client.messages.stream({
     model,
-    max_tokens: 16000,
+    max_tokens: revisionBlock ? 8000 : 16000,
     thinking: { type: "adaptive" },
-    system: getDesignPrompt().text,
-    messages: [{ role: "user", content: buildDesignContent(input) }],
-    output_config: { format: { type: "json_schema", schema } },
+    system: [{ type: "text", text: getDesignPrompt().text, cache_control: CACHE_1H }],
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: buildStableContent(input), cache_control: CACHE_1H },
+          ...(revisionBlock ? [{ type: "text" as const, text: revisionBlock }] : []),
+        ],
+      },
+    ],
+    output_config: { format: { type: "json_schema", schema: outputSchema(input) } },
   });
   const response = await stream.finalMessage();
 
@@ -126,7 +202,7 @@ async function designViaApi(input: DesignInput, apiKey: string, model: string): 
   if (!textBlock || textBlock.type !== "text") throw new ExtractionError("The model returned no text content.");
 
   return {
-    spec: normalizeSpec(input.docType, parseJsonLoose(textBlock.text)),
+    spec: specFromRaw(input, parseJsonLoose(textBlock.text)),
     engine: "api",
     model: response.model,
     usage: {
@@ -140,17 +216,18 @@ async function designViaApi(input: DesignInput, apiKey: string, model: string): 
 }
 
 async function designViaGateway(input: DesignInput, model: string, apiKey: string): Promise<SpecEngineOutput> {
-  const { schema } = getSpecSchema();
   const gateway = createGateway({ apiKey });
+  const revisionBlock = buildRevisionContent(input);
+  const prompt = revisionBlock ? `${buildStableContent(input)}\n\n${revisionBlock}` : buildStableContent(input);
 
   let object: unknown;
   let usage: NonNullable<EngineOutput["usage"]>;
   try {
     const result = await generateObject({
       model: gateway(model),
-      schema: jsonSchema<Record<string, unknown>>(schema),
+      schema: jsonSchema<Record<string, unknown>>(outputSchema(input)),
       system: getDesignPrompt().text,
-      prompt: buildDesignContent(input),
+      prompt,
       maxOutputTokens: 16000,
     });
     object = result.object;
@@ -166,7 +243,7 @@ async function designViaGateway(input: DesignInput, model: string, apiKey: strin
   }
 
   return {
-    spec: normalizeSpec(input.docType, object),
+    spec: specFromRaw(input, object),
     engine: "gateway",
     model,
     usage,
@@ -174,78 +251,27 @@ async function designViaGateway(input: DesignInput, model: string, apiKey: strin
   };
 }
 
-interface CliEnvelope {
-  result?: string;
-  total_cost_usd?: number;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
-  is_error?: boolean;
-}
-
 async function designViaCli(input: DesignInput, model: string): Promise<SpecEngineOutput> {
-  const { schema } = getSpecSchema();
+  const revisionBlock = buildRevisionContent(input);
   const prompt = [
     getDesignPrompt().text,
     "",
-    "## JSON Schema your output must conform to",
+    `## JSON Schema your output must conform to${revisionBlock ? " (a PATCH — every field optional)" : ""}`,
     "```json",
-    JSON.stringify(schema, null, 2),
+    JSON.stringify(outputSchema(input), null, 2),
     "```",
     "",
-    buildDesignContent(input),
+    buildStableContent(input),
+    ...(revisionBlock ? ["", revisionBlock] : []),
   ].join("\n");
 
-  const stdout = await new Promise<string>((resolve, reject) => {
-    const child = spawn("claude", ["-p", "--output-format", "json", "--model", model], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new ExtractionError("CLI engine timed out after 10 minutes."));
-    }, 600_000);
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) =>
-      reject(new ExtractionError(`Could not launch the claude CLI (${e.message}). Is Claude Code installed?`)),
-    );
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) reject(new ExtractionError(`claude CLI exited with code ${code}: ${err.slice(0, 500)}`));
-      else resolve(out);
-    });
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
-
-  let envelope: CliEnvelope;
-  try {
-    envelope = JSON.parse(stdout) as CliEnvelope;
-  } catch {
-    throw new ExtractionError("Could not parse the claude CLI response envelope.");
-  }
-  if (envelope.is_error || typeof envelope.result !== "string") {
-    throw new ExtractionError(`claude CLI reported an error: ${JSON.stringify(envelope).slice(0, 500)}`);
-  }
-
+  const cli = await runCli(prompt, model);
   return {
-    spec: normalizeSpec(input.docType, parseJsonLoose(envelope.result)),
+    spec: specFromRaw(input, parseJsonLoose(cli.resultText)),
     engine: "cli",
     model,
-    usage: envelope.usage
-      ? {
-          inputTokens: envelope.usage.input_tokens ?? 0,
-          outputTokens: envelope.usage.output_tokens ?? 0,
-          cacheCreationInputTokens: envelope.usage.cache_creation_input_tokens ?? 0,
-          cacheReadInputTokens: envelope.usage.cache_read_input_tokens ?? 0,
-        }
-      : null,
-    reportedCostUsd: envelope.total_cost_usd ?? null,
+    usage: cli.usage,
+    reportedCostUsd: cli.totalCostUsd,
   };
 }
 
@@ -263,4 +289,64 @@ export async function runTemplateDesign(input: DesignInput, choice: EngineChoice
     return designViaApi(input, choice.apiKey, choice.model);
   }
   return designViaCli(input, choice.model);
+}
+
+export interface CheckedDesignOutput extends SpecEngineOutput {
+  /** Lint violations still standing after the repair attempt (ideally empty). */
+  lintNotes: string[];
+}
+
+function sumUsage(rounds: SpecEngineOutput[]): EngineOutput["usage"] {
+  const withUsage = rounds.filter((r) => r.usage);
+  if (withUsage.length === 0) return null;
+  return withUsage.reduce(
+    (acc, r) => ({
+      inputTokens: acc.inputTokens + r.usage!.inputTokens,
+      outputTokens: acc.outputTokens + r.usage!.outputTokens,
+      cacheCreationInputTokens: acc.cacheCreationInputTokens + r.usage!.cacheCreationInputTokens,
+      cacheReadInputTokens: acc.cacheReadInputTokens + r.usage!.cacheReadInputTokens,
+    }),
+    { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+  );
+}
+
+/**
+ * A design round plus the deterministic quality gate: lint the spec, and if it
+ * fails (illegible contrast, unavailable fonts) run ONE automatic patch-repair
+ * round. Anything still failing is appended to the rationale so the human
+ * reviewer sees it — quality floor holds regardless of which model designed it.
+ */
+export async function runCheckedTemplateDesign(input: DesignInput, choice: EngineChoice): Promise<CheckedDesignOutput> {
+  const rounds: SpecEngineOutput[] = [await runTemplateDesign(input, choice)];
+  let final = rounds[0];
+  let issues = lintSpec(final.spec, input.fontNames);
+
+  if (issues.length > 0) {
+    try {
+      const repaired = await runTemplateDesign(
+        { ...input, previousSpec: final.spec, feedback: undefined, repairNotes: issues },
+        choice,
+      );
+      rounds.push(repaired);
+      final = repaired;
+      issues = lintSpec(repaired.spec, input.fontNames);
+    } catch {
+      // Repair is best-effort — the reviewed spec stands, with the notes below.
+    }
+  }
+
+  const spec =
+    issues.length > 0
+      ? { ...final.spec, design_rationale: `${final.spec.design_rationale}\n\nAutomated check: ${issues.join(" ")}` }
+      : final.spec;
+
+  const reported = rounds.map((r) => r.reportedCostUsd).filter((c): c is number => c != null);
+  return {
+    spec,
+    engine: final.engine,
+    model: final.model,
+    usage: sumUsage(rounds),
+    reportedCostUsd: reported.length > 0 ? reported.reduce((a, b) => a + b, 0) : null,
+    lintNotes: issues,
+  };
 }

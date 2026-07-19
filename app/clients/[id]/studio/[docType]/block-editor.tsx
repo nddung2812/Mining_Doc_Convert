@@ -10,6 +10,8 @@ export interface StudioEditorApi {
   getCurrentBlock: () => Promise<EditorBlock | null>;
   /** Replace a block's data in place, then push the fresh doc to onChange. */
   updateBlock: (id: string, data: Record<string, unknown>) => Promise<void>;
+  /** Replace several blocks' data, with ONE save/onChange at the end. */
+  updateBlocks: (entries: { id: string; data: Record<string, unknown> }[]) => Promise<void>;
 }
 
 interface Props {
@@ -90,6 +92,13 @@ export default function BlockEditor({ initial, onChange, apiRef }: Props) {
           },
           async updateBlock(id, newData) {
             await editor.blocks.update(id, newData);
+            const doc = await editor.save();
+            onChangeRef.current(doc as unknown as EditorDoc);
+          },
+          async updateBlocks(entries) {
+            for (const entry of entries) {
+              await editor.blocks.update(entry.id, entry.data);
+            }
             const doc = await editor.save();
             onChangeRef.current(doc as unknown as EditorDoc);
           },

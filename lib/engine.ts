@@ -28,7 +28,7 @@ export interface EngineOutput {
 
 export class ExtractionError extends Error {}
 
-function buildUserContent(docType: DocType, clientName: string, sourceText: string): string {
+export function buildUserContent(docType: DocType, clientName: string, sourceText: string): string {
   return [
     `Doc type: ${docType.toUpperCase()}`,
     `Client (for the client_name field only if the source itself does not name one): ${clientName}`,
@@ -53,7 +53,7 @@ export function parseJsonLoose(text: string): unknown {
   }
 }
 
-function validateExtraction(docType: DocType, data: unknown): ExtractionResult {
+export function validateExtraction(docType: DocType, data: unknown): ExtractionResult {
   const { validate } = getDocTypeAssets(docType);
   if (!validate(data)) {
     const errors = (validate.errors ?? [])
@@ -370,6 +370,12 @@ export interface CompletionOutput {
   reportedCostUsd: number | null;
 }
 
+export interface CompletionOptions {
+  maxOutputTokens?: number;
+  /** Anthropic-direct only; small mechanical edits run fine (and fast) at "low". */
+  effort?: "low" | "medium" | "high";
+}
+
 /**
  * Shared plain-text completion over the same three engines — for the smaller
  * AI features (block revise, future rewrites) that don't need the extraction
@@ -379,8 +385,9 @@ export async function completeText(
   system: string,
   user: string,
   choice: EngineChoice,
-  maxOutputTokens = 4000,
+  options: CompletionOptions = {},
 ): Promise<CompletionOutput> {
+  const maxOutputTokens = options.maxOutputTokens ?? 4000;
   if (choice.engine === "gateway") {
     if (!choice.apiKey) throw new ExtractionError("Gateway engine selected but no AI Gateway key resolved.");
     const gateway = createGateway({ apiKey: choice.apiKey });
@@ -411,6 +418,7 @@ export async function completeText(
     const res = await client.messages.create({
       model: choice.model,
       max_tokens: maxOutputTokens,
+      ...(options.effort ? { output_config: { effort: options.effort } } : {}),
       system,
       messages: [{ role: "user", content: user }],
     });

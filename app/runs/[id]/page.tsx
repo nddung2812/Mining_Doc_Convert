@@ -55,7 +55,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
       </div>
 
       {run.status === "generating" && (
-        <GeneratingPoller runId={run.id} startedAt={run.generationStartedAt ?? run.createdAt} />
+        <GeneratingPoller
+          runId={run.id}
+          startedAt={run.generationStartedAt ?? run.createdAt}
+          batch={Boolean(run.batchId)}
+        />
       )}
 
       {run.status === "complete" && run.approval && (

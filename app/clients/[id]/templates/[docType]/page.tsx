@@ -15,6 +15,7 @@ import {
   Pencil,
   Plus,
   Printer,
+  Trash2,
   Wand2,
   XCircle,
 } from "lucide-react";
@@ -68,6 +69,25 @@ export default function TemplateVersionsPage() {
     }
   }
 
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function deleteTemplate(buildId: string) {
+    setDeleteError(null);
+    const res = await fetch(`/api/builds/${buildId}`, { method: "DELETE" });
+    if (res.ok) {
+      setConfirmDeleteId(null);
+      setSelected((prev) => (prev?.buildId === buildId ? null : prev));
+      // Reload both lists — deleting the default template repoints the client slot.
+      setRefreshKey((k) => k + 1);
+    } else {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      setDeleteError(body.error ?? `Delete failed (${res.status})`);
+      setConfirmDeleteId(null);
+    }
+  }
+
   useEffect(() => {
     void (async () => {
       const [clientRes, buildsRes] = await Promise.all([
@@ -83,7 +103,7 @@ export default function TemplateVersionsPage() {
         setSelected({ buildId: latest.id, version: latest.iterations[latest.iterations.length - 1].version });
       }
     })();
-  }, [clientId, docType]);
+  }, [clientId, docType, refreshKey]);
 
   const loadPreview = useCallback(
     async (buildId: string, version: number) => {
@@ -167,6 +187,8 @@ export default function TemplateVersionsPage() {
           .
         </div>
       )}
+
+      {deleteError && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{deleteError}</p>}
 
       {builds.length === 0 ? (
         <div className="rounded-lg border border-dashed border-slate-300 bg-white p-10 text-center">
@@ -271,6 +293,31 @@ export default function TemplateVersionsPage() {
                       </a>
                     </>
                   )}
+                  {build.status !== "generating" &&
+                    (confirmDeleteId === build.id ? (
+                      <span className="flex gap-1.5">
+                        <button
+                          onClick={() => void deleteTemplate(build.id)}
+                          className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" /> Confirm delete
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700"
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteId(build.id)}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:border-red-400"
+                        aria-label={`Delete ${build.name}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Delete
+                      </button>
+                    ))}
                 </div>
               </div>
 

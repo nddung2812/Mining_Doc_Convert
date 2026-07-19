@@ -9,16 +9,25 @@ import { NOT_FOUND_SENTINEL } from "./render";
 const STALE_GENERATING_MS = 15 * 60_000;
 
 /**
+ * Batch runs live server-side at Anthropic: results are guaranteed within 24h,
+ * so their liveness window is the batch's, not the local worker's.
+ */
+const STALE_BATCH_MS = 26 * 3_600_000;
+
+/**
  * Self-healing for runs whose background extraction died mid-flight: without
  * this they would sit in "generating" forever with no way to retry.
  */
 export async function rescueStaleRun(run: RunRecord): Promise<RunRecord> {
   if (run.status !== "generating") return run;
+  const staleMs = run.batchId ? STALE_BATCH_MS : STALE_GENERATING_MS;
   const lastBeat = Date.parse(run.updatedAt ?? run.generationStartedAt ?? run.createdAt);
-  if (Number.isFinite(lastBeat) && Date.now() - lastBeat < STALE_GENERATING_MS) return run;
+  if (Number.isFinite(lastBeat) && Date.now() - lastBeat < staleMs) return run;
 
   run.status = "failed";
-  run.error = "Extraction was interrupted (server stopped mid-run). Start a new run.";
+  run.error = run.batchId
+    ? "The batch never returned this document (expired). Start a new run."
+    : "Extraction was interrupted (server stopped mid-run). Start a new run.";
   run.generationStartedAt = null;
   run.updatedAt = new Date().toISOString();
   await getStorage().saveRun(run);

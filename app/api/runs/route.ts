@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "crypto";
 import { NextRequest, NextResponse, after } from "next/server";
-import { isDocType, type RunRecord } from "@/lib/types";
+import { isDocType, type DocType, type RunRecord } from "@/lib/types";
 import { getDocTypeAssets } from "@/lib/doctypes";
 import { extractSourceText } from "@/lib/source";
 import { ExtractionError, resolveEngine, runExtraction } from "@/lib/engine";
-import { getStorage } from "@/lib/storage";
+import { getStorage, type Storage } from "@/lib/storage";
 import { estimateCostUsd } from "@/lib/cost";
 import { capReachedMessage, dailyCapStatus, recordSpend } from "@/lib/ledger";
 import { confidenceSummary, listRunsRescued } from "@/lib/runs";
+import { submitExtractionBatch } from "@/lib/batch";
 import { blocksToText, type EditorDoc } from "@/lib/blocks";
 
 export const runtime = "nodejs";
@@ -17,6 +18,124 @@ export async function GET() {
   const runs = await listRunsRescued();
   // History list: strip the heavy extracted payload (undefined drops in JSON).
   return NextResponse.json(runs.map((run) => ({ ...run, extracted: undefined })));
+}
+
+/**
+ * Bulk mode: several source files at once become one Anthropic Message Batch —
+ * every request billed at 50% of standard token prices, results typically
+ * within the hour. One run record per file; any run page poll settles the
+ * whole batch when it ends. Anthropic-direct (api engine) only.
+ */
+async function createBatchRuns(args: {
+  request: NextRequest;
+  form: FormData;
+  storage: Storage;
+  clientId: string | null;
+  clientName: string;
+  docType: DocType;
+  files: File[];
+  templateBuildId: string | null;
+}): Promise<NextResponse> {
+  const { request, form, storage, clientId, clientName, docType, files, templateBuildId } = args;
+
+  let choice;
+  try {
+    choice = resolveEngine({
+      anthropicKey: request.headers.get("x-anthropic-key"),
+      gatewayKey: request.headers.get("x-gateway-key"),
+      model: String(form.get("model") ?? ""),
+    });
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : "Engine error" }, { status: 400 });
+  }
+  if (choice.engine !== "api" || !choice.apiKey) {
+    return NextResponse.json(
+      {
+        error:
+          "Bulk batch runs go through the Anthropic Batch API — pick a Claude model and add an Anthropic API key in Settings (the local CLI and gateway models can't batch). Or submit files one at a time.",
+      },
+      { status: 400 },
+    );
+  }
+  const cap = await dailyCapStatus();
+  if (cap.overCap) return NextResponse.json({ error: capReachedMessage(cap) }, { status: 429 });
+
+  // Read every source up front so an unreadable file fails the whole submission
+  // cleanly before any run record exists.
+  const sources: { file: File; buffer: Buffer; text: string }[] = [];
+  for (const file of files) {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    try {
+      sources.push({ file, buffer, text: await extractSourceText(file.name, buffer) });
+    } catch (e) {
+      return NextResponse.json(
+        { error: `"${file.name}": ${e instanceof Error ? e.message : "unreadable source"}` },
+        { status: 400 },
+      );
+    }
+  }
+
+  const assets = getDocTypeAssets(docType);
+  const createdAt = new Date().toISOString();
+  const runs: RunRecord[] = sources.map(({ file, buffer }) => ({
+    id: randomUUID(),
+    createdAt,
+    status: "generating",
+    generationStartedAt: createdAt,
+    updatedAt: createdAt,
+    approval: null,
+    batchId: null,
+    clientId,
+    clientName,
+    docType,
+    templateBuildId,
+    source: {
+      filename: file.name,
+      bytes: buffer.length,
+      sha256: createHash("sha256").update(buffer).digest("hex"),
+    },
+    promptVersion: assets.promptVersion,
+    schemaVersion: assets.schemaVersion,
+    templateVersion: assets.templateVersion,
+    engine: "api",
+    model: choice.model,
+    usage: null,
+    costUsd: null,
+    extracted: null,
+    validation: { valid: false, errors: [] },
+    confidenceSummary: { high: 0, medium: 0, low: 0, notFound: 0, warnings: 0 },
+    error: null,
+    downloads: [],
+  }));
+
+  for (let i = 0; i < runs.length; i++) {
+    await storage.saveFile(runs[i].id, `source-${sources[i].file.name.replace(/[^\w.\-]+/g, "_")}`, sources[i].buffer);
+    await storage.saveRun(runs[i]);
+  }
+
+  try {
+    const batchId = await submitExtractionBatch(
+      runs.map((run, i) => ({ runId: run.id, docType, clientName, sourceText: sources[i].text })),
+      choice.apiKey,
+      choice.model,
+    );
+    for (const run of runs) {
+      run.batchId = batchId;
+      run.updatedAt = new Date().toISOString();
+      await storage.saveRun(run);
+    }
+    return NextResponse.json({ ids: runs.map((r) => r.id), batchId, status: "generating" });
+  } catch (e) {
+    const message = `Batch submission failed: ${e instanceof Error ? e.message.slice(0, 300) : "unknown error"}`;
+    for (const run of runs) {
+      run.status = "failed";
+      run.error = message;
+      run.generationStartedAt = null;
+      run.updatedAt = new Date().toISOString();
+      await storage.saveRun(run);
+    }
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -47,6 +166,23 @@ export async function POST(request: NextRequest) {
     clientName = client.name;
   }
   if (!clientName) return NextResponse.json({ error: "Missing client name" }, { status: 400 });
+
+  // An explicit template choice must be a finalized build of this client+type.
+  let templateBuildId: string | null = null;
+  const templateBuildIdRaw = String(form.get("templateBuildId") ?? "").trim();
+  if (templateBuildIdRaw) {
+    const build = await storage.getBuild(templateBuildIdRaw);
+    if (!build || build.status !== "final" || build.clientId !== clientId || build.docType !== docType) {
+      return NextResponse.json({ error: "Chosen template is not a finalised template for this client and doc type" }, { status: 400 });
+    }
+    templateBuildId = build.id;
+  }
+
+  // Several files at once -> bulk mode via the Message Batches API (50% pricing).
+  const files = form.getAll("file").filter((f): f is File => f instanceof File && f.size > 0);
+  if (sourceType !== "studio" && files.length > 1) {
+    return createBatchRuns({ request, form, storage, clientId, clientName, docType, files, templateBuildId });
+  }
 
   // Source content: an uploaded file, or the client's Content Studio document.
   let sourceBuffer: Buffer;
@@ -86,17 +222,6 @@ export async function POST(request: NextRequest) {
     } catch (e) {
       return NextResponse.json({ error: e instanceof Error ? e.message : "Unreadable source" }, { status: 400 });
     }
-  }
-
-  // An explicit template choice must be a finalized build of this client+type.
-  let templateBuildId: string | null = null;
-  const templateBuildIdRaw = String(form.get("templateBuildId") ?? "").trim();
-  if (templateBuildIdRaw) {
-    const build = await storage.getBuild(templateBuildIdRaw);
-    if (!build || build.status !== "final" || build.clientId !== clientId || build.docType !== docType) {
-      return NextResponse.json({ error: "Chosen template is not a finalised template for this client and doc type" }, { status: 400 });
-    }
-    templateBuildId = build.id;
   }
 
   // Cost guardrail: block new paid-engine runs once today's spend hits the cap.

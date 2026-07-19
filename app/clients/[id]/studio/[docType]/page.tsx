@@ -62,6 +62,7 @@ export default function StudioPage() {
 
   const editorApi = useRef<StudioEditorApi | null>(null);
   const [instruction, setInstruction] = useState("");
+  const [aiScope, setAiScope] = useState<"block" | "doc">("block");
   const [aiState, setAiState] = useState<AiState>("idle");
   const [aiError, setAiError] = useState<string | null>(null);
 
@@ -123,27 +124,53 @@ export default function StudioPage() {
     };
   }, [save]);
 
-  const reviseSelected = useCallback(async () => {
+  const revise = useCallback(async () => {
     const api = editorApi.current;
     const text = instruction.trim();
     if (!api || !text) return;
-    const block = await api.getCurrentBlock();
-    if (!block || !block.id) {
-      setAiState("error");
-      setAiError("Click into a block first, then describe the change.");
-      return;
+
+    // Scope: the focused block, or every block in the document (one AI call —
+    // the response carries only the blocks that changed).
+    let payload: Record<string, unknown>;
+    if (aiScope === "doc") {
+      const blocks = (latestDoc.current?.blocks ?? []).filter((b) => b.id);
+      if (blocks.length === 0) {
+        setAiState("error");
+        setAiError("The document is empty — write something first.");
+        return;
+      }
+      payload = { blocks, instruction: text };
+    } else {
+      const block = await api.getCurrentBlock();
+      if (!block || !block.id) {
+        setAiState("error");
+        setAiError("Click into a block first, then describe the change.");
+        return;
+      }
+      payload = { block, instruction: text };
     }
+
     setAiState("working");
     setAiError(null);
     try {
       const res = await fetch(`/api/clients/${clientId}/studio/${docType}/revise`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...keyHeaders() },
-        body: JSON.stringify({ block, instruction: text }),
+        body: JSON.stringify(payload),
       });
-      const body = (await res.json()) as { block?: { data: Record<string, unknown> }; error?: string };
-      if (res.ok && body.block) {
-        await api.updateBlock(block.id, body.block.data);
+      const body = (await res.json()) as {
+        block?: { id?: string; data: Record<string, unknown> };
+        blocks?: { id?: string; data: Record<string, unknown> }[];
+        error?: string;
+      };
+      if (res.ok && body.blocks) {
+        await api.updateBlocks(
+          body.blocks.filter((b): b is { id: string; data: Record<string, unknown> } => Boolean(b.id)),
+        );
+        setInstruction("");
+        setAiState("idle");
+      } else if (res.ok && body.block && typeof payload.block === "object") {
+        await api.updateBlock((payload.block as { id: string }).id, body.block.data);
         setInstruction("");
         setAiState("idle");
       } else {
@@ -154,7 +181,7 @@ export default function StudioPage() {
       setAiState("error");
       setAiError("Network error — is the server running?");
     }
-  }, [clientId, docType, instruction]);
+  }, [clientId, docType, instruction, aiScope]);
 
   const previewHtml = useMemo(() => (doc ? blocksToHtml(doc) : ""), [doc]);
 
@@ -212,26 +239,50 @@ export default function StudioPage() {
 
             <div className="rounded-lg border border-[#1F3A5F]/25 bg-[#1F3A5F]/[0.03] p-4">
               <h2 className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#1F3A5F]">
-                <Sparkles className="h-4 w-4" /> Ask AI to revise a block
+                <Sparkles className="h-4 w-4" /> Ask AI to revise
               </h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Click into a block in the editor, describe the change, and AI rewrites just that block.
+              <div className="mt-2 inline-flex rounded-md border border-slate-300 bg-white p-0.5 text-xs font-medium">
+                <button
+                  onClick={() => setAiScope("block")}
+                  className={`rounded px-2.5 py-1 ${aiScope === "block" ? "bg-[#1F3A5F] text-white" : "text-slate-600 hover:text-slate-900"}`}
+                >
+                  Selected block
+                </button>
+                <button
+                  onClick={() => setAiScope("doc")}
+                  className={`rounded px-2.5 py-1 ${aiScope === "doc" ? "bg-[#1F3A5F] text-white" : "text-slate-600 hover:text-slate-900"}`}
+                >
+                  Whole document
+                </button>
+              </div>
+              <p className="mt-1.5 text-xs text-slate-500">
+                {aiScope === "block"
+                  ? "Click into a block in the editor, describe the change, and AI rewrites just that block."
+                  : "One AI call across every block — only the blocks that change are touched."}
               </p>
               <textarea
                 value={instruction}
                 onChange={(e) => setInstruction(e.target.value)}
                 rows={2}
-                placeholder="e.g. “Tighten this to three sentences” or “Add a column for residual risk owner”."
+                placeholder={
+                  aiScope === "block"
+                    ? "e.g. “Tighten this to three sentences” or “Add a column for residual risk owner”."
+                    : "e.g. “Formalise the tone throughout” or “Rename ‘workers’ to ‘personnel’ everywhere”."
+                }
                 className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-[#1F3A5F] focus:outline-none"
               />
               <div className="mt-2 flex items-center justify-between gap-3">
                 {aiState === "error" ? (
                   <span className="text-xs text-red-600">{aiError}</span>
                 ) : (
-                  <span className="text-xs text-slate-400">The revised block replaces the one you selected.</span>
+                  <span className="text-xs text-slate-400">
+                    {aiScope === "block"
+                      ? "The revised block replaces the one you selected."
+                      : "Changed blocks are replaced in place; the rest stay untouched."}
+                  </span>
                 )}
                 <button
-                  onClick={() => void reviseSelected()}
+                  onClick={() => void revise()}
                   disabled={aiState === "working" || !instruction.trim()}
                   className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[#1F3A5F] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
                 >
@@ -241,7 +292,8 @@ export default function StudioPage() {
                     </>
                   ) : (
                     <>
-                      <Sparkles className="h-3.5 w-3.5" /> Rewrite selected block
+                      <Sparkles className="h-3.5 w-3.5" />{" "}
+                      {aiScope === "block" ? "Rewrite selected block" : "Rewrite document"}
                     </>
                   )}
                 </button>

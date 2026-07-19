@@ -106,6 +106,165 @@ export function getSpecSchema(): { schema: Record<string, unknown>; version: str
   return specSchemaCache;
 }
 
+/**
+ * A revision round returns a PATCH — only the fields being changed — instead of
+ * a full regenerated spec. Everything the patch omits is carried over from the
+ * previous spec byte-for-byte, so review rounds can no longer drift decisions
+ * nobody commented on (and the output is a fraction of the tokens).
+ */
+export interface SpecPatch {
+  design_rationale?: string;
+  typography?: Partial<TemplateSpec["typography"]>;
+  colors?: Partial<TemplateSpec["colors"]>;
+  cover?: Partial<TemplateSpec["cover"]>;
+  headings?: Partial<TemplateSpec["headings"]>;
+  tables?: Partial<TemplateSpec["tables"]>;
+  spacing?: TemplateSpec["spacing"];
+  /** Present only when reordering or retitling — always the complete array. */
+  sections?: { id: string; title: string }[];
+}
+
+let patchSchemaCache: Record<string, unknown> | null = null;
+
+/** The spec schema with every group optional — the shape of a revision patch. */
+export function getSpecPatchSchema(): Record<string, unknown> {
+  if (!patchSchemaCache) {
+    const clone = structuredClone(getSpecSchema().schema) as Record<string, unknown> & {
+      properties?: Record<string, Record<string, unknown>>;
+      required?: string[];
+    };
+    clone.required = ["design_rationale"];
+    for (const [key, prop] of Object.entries(clone.properties ?? {})) {
+      // Section entries stay fully specified; the array itself is optional.
+      if (key !== "sections" && prop && typeof prop === "object" && prop.type === "object") delete prop.required;
+    }
+    if (clone.properties?.design_rationale) {
+      clone.properties.design_rationale.description =
+        "Required. 1-3 sentences summarising exactly what this patch changes and why.";
+    }
+    patchSchemaCache = clone;
+  }
+  return patchSchemaCache;
+}
+
+/** True when the model changed nothing beyond the rationale text. */
+export function patchIsEmpty(raw: unknown): boolean {
+  const p = (raw ?? {}) as Record<string, unknown>;
+  return !Object.entries(p).some(([key, value]) => {
+    if (key === "design_rationale") return false;
+    if (value == null) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value).length > 0;
+    return true;
+  });
+}
+
+/**
+ * Deterministic drift guard: a patch may only retitle sections the reviewer
+ * actually commented on. Reordering is accepted (it is a whole-array move the
+ * reviewer sees immediately), but stray retitles of uncommented sections are
+ * reverted to the previous title. Repair rounds pass an empty allow-set.
+ */
+export function guardSpecPatch(raw: unknown, previous: TemplateSpec, allowedSectionIds: Set<string>): SpecPatch {
+  const patch = (raw ?? {}) as SpecPatch;
+  if (!Array.isArray(patch.sections)) return patch;
+  const previousTitle = new Map(previous.sections.map((s) => [s.id, s.title]));
+  patch.sections = patch.sections.map((entry) => {
+    const id = String(entry?.id ?? "");
+    const before = previousTitle.get(id);
+    if (before === undefined || allowedSectionIds.has(id)) return entry;
+    return { id, title: before };
+  });
+  return patch;
+}
+
+/** Merge a revision patch onto the previous spec, then normalize as usual. */
+export function applySpecPatch(docType: DocType, previous: TemplateSpec, patch: SpecPatch): TemplateSpec {
+  const merged = {
+    ...previous,
+    design_rationale:
+      typeof patch.design_rationale === "string" && patch.design_rationale.trim()
+        ? patch.design_rationale
+        : previous.design_rationale,
+    typography: { ...previous.typography, ...(patch.typography ?? {}) },
+    colors: { ...previous.colors, ...(patch.colors ?? {}) },
+    cover: { ...previous.cover, ...(patch.cover ?? {}) },
+    headings: { ...previous.headings, ...(patch.headings ?? {}) },
+    tables: { ...previous.tables, ...(patch.tables ?? {}) },
+    spacing: patch.spacing ?? previous.spacing,
+    sections: Array.isArray(patch.sections) && patch.sections.length > 0 ? patch.sections : previous.sections,
+  };
+  return normalizeSpec(docType, merged);
+}
+
+/** Fonts that ship with Word everywhere — the same list the design prompt allows. */
+export const WORD_SAFE_FONTS = [
+  "Calibri",
+  "Cambria",
+  "Arial",
+  "Georgia",
+  "Garamond",
+  "Verdana",
+  "Tahoma",
+  "Trebuchet MS",
+  "Times New Roman",
+  "Segoe UI",
+  "Book Antiqua",
+  "Century Gothic",
+];
+
+function relativeLuminance(hex: string): number {
+  const channel = (i: number) => {
+    const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+}
+
+/** WCAG contrast ratio between two 6-digit hex colors (no #). */
+export function contrastRatio(a: string, b: string): number {
+  const la = relativeLuminance(a);
+  const lb = relativeLuminance(b);
+  const [hi, lo] = la >= lb ? [la, lb] : [lb, la];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const MIN_CONTRAST = 3; // WCAG AA for large text — headings and table headers qualify.
+
+/**
+ * Deterministic quality gate, model-independent: the design prompt ASKS for
+ * legible contrast and Word-available fonts, this VERIFIES it. Violations feed
+ * one automatic repair round; anything still failing is surfaced to the
+ * reviewer instead of silently shipping an illegible template.
+ */
+export function lintSpec(spec: TemplateSpec, extraAllowedFonts: string[] = []): string[] {
+  const issues: string[] = [];
+  const check = (label: string, fg: string, bg: string, bgLabel: string) => {
+    const ratio = contrastRatio(fg, bg);
+    if (ratio < MIN_CONTRAST) {
+      issues.push(
+        `${label} (#${fg}) is hard to read on ${bgLabel} (#${bg}) — contrast ${ratio.toFixed(1)}:1, needs at least ${MIN_CONTRAST}:1. Darken the text colour or lighten the background.`,
+      );
+    }
+  };
+  check("Table header text", spec.tables.header_text_color, spec.colors.table_header_fill, "the header fill");
+  check("The accent colour used for headings", spec.colors.accent, "FFFFFF", "the white page");
+  check("The muted text colour", spec.colors.muted_text, "FFFFFF", "the white page");
+
+  const allowed = new Set([...WORD_SAFE_FONTS, ...extraAllowedFonts].map((f) => f.toLowerCase().trim()));
+  for (const [label, font] of [
+    ["Heading font", spec.typography.heading_font],
+    ["Body font", spec.typography.body_font],
+  ] as const) {
+    if (!allowed.has(font.toLowerCase().trim())) {
+      issues.push(
+        `${label} "${font}" is neither a widely-available Word font nor an uploaded client font — templates using it will silently fall back in Word. Pick the closest match from: ${[...WORD_SAFE_FONTS, ...extraAllowedFonts].join(", ")}.`,
+      );
+    }
+  }
+  return issues;
+}
+
 function hex(value: unknown, fallback: string): string {
   const s = String(value ?? "").replace(/^#/, "").toUpperCase();
   return /^[0-9A-F]{6}$/.test(s) ? s : fallback;

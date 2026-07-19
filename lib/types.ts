@@ -1,6 +1,7 @@
 export type DocType = "sop" | "ra" | "hmp" | "proposal";
 
-export type EngineId = "api" | "cli" | "gateway";
+/** "derived" = produced deterministically from the client's brand kit — no model call. */
+export type EngineId = "api" | "cli" | "gateway" | "derived";
 
 export interface ExtractionMeta {
   field_confidence: {
@@ -19,12 +20,33 @@ export interface ExtractionResult {
   meta: ExtractionMeta;
 }
 
+/**
+ * Client-level styling distilled from a finalised template build: the shared
+ * brand identity (colours, fonts, cover treatment, tables) minus anything
+ * doc-type specific. Templates for other doc types compile deterministically
+ * from this — no AI round, guaranteed visual consistency across the set.
+ */
+export interface BrandKit {
+  typography: TemplateSpec["typography"];
+  colors: TemplateSpec["colors"];
+  cover: Omit<TemplateSpec["cover"], "subtitle_text">;
+  headings: TemplateSpec["headings"];
+  tables: TemplateSpec["tables"];
+  spacing: TemplateSpec["spacing"];
+  /** The finalised build whose styling this is (provenance). */
+  derivedFrom: { buildId: string; docType: DocType; finalizedAt: string };
+  /** Stored logo filename inside the source build's files, if one was uploaded. */
+  logoFilename: string | null;
+}
+
 export interface ClientRecord {
   id: string;
   name: string;
   createdAt: string;
   /** Per-doc-type custom templates; absent doc types fall back to the master template. */
   templates: Partial<Record<DocType, { filename: string; uploadedAt: string }>>;
+  /** Refreshed every time a build is finalised — the latest finalised styling wins. */
+  brandKit?: BrandKit | null;
 }
 
 /** A reviewer's pre-approval correction to one extracted field (audit trail). */
@@ -51,6 +73,8 @@ export interface RunRecord {
   approval: { approvedBy: string; at: string } | null;
   /** Reviewer corrections applied before approval, newest last. */
   amendments?: RunAmendment[];
+  /** Set when this run is part of an Anthropic Message Batch (bulk mode, 50% token pricing). */
+  batchId?: string | null;
   /** Set when the run is tied to a registered client (enables their custom template). */
   clientId: string | null;
   clientName: string;
