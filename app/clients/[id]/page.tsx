@@ -223,7 +223,7 @@ export default function ClientWorkspacePage() {
         ) : (
           <button
             onClick={() => setConfirmDelete(true)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-red-200 px-3 py-1.5 font-medium text-red-600 hover:border-red-400"
+            className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 font-medium text-white hover:bg-red-700"
           >
             <Trash2 className="h-3.5 w-3.5" /> Delete client
           </button>
